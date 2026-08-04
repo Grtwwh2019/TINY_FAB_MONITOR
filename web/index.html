@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Oracle FAB 运行监控</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">OF</div>
+        <div>
+          <h1>FAB 运行监控</h1>
+          <p>Oracle 调度状态与依赖分析</p>
+        </div>
+      </div>
+      <div class="controls">
+        <label class="date-control">
+          <span>业务日期</span>
+          <input id="processDate" inputmode="numeric" maxlength="8" placeholder="YYYYMMDD">
+        </label>
+        <button id="applyDate" class="button button-primary">查询日期</button>
+        <button id="refresh" class="button button-secondary"><span class="refresh-icon">↻</span> 立即刷新</button>
+        <button id="shutdown" class="button button-quiet" title="安全关闭监控程序">退出</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="status-strip" aria-live="polite">
+        <div class="connection"><span id="connectionDot" class="dot"></span><span id="connectionText">正在连接</span></div>
+        <div id="lastPoll">上次刷新：--</div>
+        <div id="nextPoll">下次刷新：--</div>
+        <div id="pollingBadge" class="polling-badge hidden">读取中</div>
+      </section>
+      <div id="errorBanner" class="error-banner hidden"></div>
+
+      <section class="summary-grid" aria-label="运行概览">
+        <article class="metric metric-running">
+          <div class="metric-label">正在运行</div><div id="runningCount" class="metric-value">0</div><div class="metric-note">状态 I / E / B</div>
+        </article>
+        <article class="metric metric-ready">
+          <div class="metric-label">当日已完成</div><div id="completedCount" class="metric-value">0</div><div class="metric-note">已捕获 I → R</div>
+        </article>
+        <article class="metric metric-alert">
+          <div class="metric-label">异常任务</div><div id="anomalyCount" class="metric-value">0</div><div class="metric-note">捕获到状态 E</div>
+        </article>
+        <article class="metric metric-history">
+          <div class="metric-label">历史运行记录</div><div id="historyCount" class="metric-value">0</div><div class="metric-note">重启后仍保留</div>
+        </article>
+      </section>
+
+      <nav class="tabs" aria-label="内容切换">
+        <button class="tab active" data-panel="tasksPanel">任务状态</button>
+        <button class="tab" data-panel="graphPanel">依赖 DAG</button>
+        <button class="tab" data-panel="historyPanel">运行历史</button>
+      </nav>
+
+      <section id="tasksPanel" class="panel active">
+        <div class="panel-head">
+          <div><h2>任务状态</h2><p>唯一标识：日期 + Thread + Level + FAB</p></div>
+          <div class="filter-wrap"><input id="taskFilter" placeholder="筛选 FAB / 描述 / 状态"></div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>FAB</th><th>Thread / Level</th><th>状态</th><th>状态开始时间</th><th>I 开始时间</th><th>当前 / 本次时长</th><th>历史平均</th><th>异常时间</th></tr></thead>
+            <tbody id="taskRows"></tbody>
+          </table>
+          <div id="taskEmpty" class="empty hidden">当前日期没有任务数据</div>
+        </div>
+      </section>
+
+      <section id="graphPanel" class="panel">
+        <div class="panel-head graph-head">
+          <div><h2>依赖关系</h2><p>箭头方向：依赖任务 → 后续任务。滚轮缩放，拖动画布。</p></div>
+          <div class="legend"><span><i class="legend-dot running"></i>运行中</span><span><i class="legend-dot done"></i>完成</span><span><i class="legend-dot error"></i>异常</span><span><i class="legend-dot waiting"></i>等待</span></div>
+        </div>
+        <div id="graphViewport" class="graph-viewport">
+          <svg id="dag" role="img" aria-label="FAB 依赖关系图"></svg>
+          <div id="graphEmpty" class="empty hidden">没有可展示的依赖关系</div>
+          <div class="zoom-tools"><button id="zoomOut" title="缩小">−</button><button id="zoomReset" title="适合窗口">⌂</button><button id="zoomIn" title="放大">＋</button></div>
+        </div>
+      </section>
+
+      <section id="historyPanel" class="panel">
+        <div class="panel-head">
+          <div><h2>运行历史</h2><p>最近 200 次运行；平均值从同类任务第 2 次完成后开始显示。</p></div>
+          <div class="filter-wrap"><input id="historyFilter" placeholder="筛选日期 / FAB / Thread"></div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>业务日期</th><th>FAB</th><th>Thread / Level</th><th>I 时间</th><th>R 时间</th><th>持续时长</th><th>异常时间点</th></tr></thead>
+            <tbody id="historyRows"></tbody>
+          </table>
+          <div id="historyEmpty" class="empty hidden">尚未捕获到运行记录</div>
+        </div>
+      </section>
+    </main>
+    <footer>所有统计数据保存在本机 data 目录 · 页面每 10 秒自动更新</footer>
+  </div>
+  <div id="toast" class="toast hidden" role="status"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

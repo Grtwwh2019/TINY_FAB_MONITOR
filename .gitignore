@@ -1,0 +1,18 @@
+# Local Oracle configuration and credentials
+config.json
+
+# Runtime data
+data/
+startup-error.txt
+*.log
+
+# Build and workspace artifacts
+outputs/
+work/
+*.exe
+*.zip
+
+# OS and editor files
+.DS_Store
+.idea/
+.vscode/

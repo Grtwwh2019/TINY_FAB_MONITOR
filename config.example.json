@@ -1,0 +1,29 @@
+{
+  "oracle": {
+    "host": "127.0.0.1",
+    "port": 1521,
+    "service_name": "ORCL",
+    "username": "your_username",
+    "password": "your_password",
+    "connect_timeout_seconds": 15
+  },
+  "tables": {
+    "schedule": "IATFSC_FABSCHD",
+    "level_desc": "IATLVL_LEVEL_DESC",
+    "fab_plan": "IATCFB_FABPLAN",
+    "fab_dependency": "IATCFB_FABDEPN"
+  },
+  "monitor": {
+    "process_date": "20251231",
+    "poll_interval_minutes": 5,
+    "level_min": 41,
+    "level_max": 69
+  },
+  "server": {
+    "listen": "127.0.0.1:8765",
+    "open_browser": false
+  },
+  "storage": {
+    "directory": "data"
+  }
+}
