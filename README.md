@@ -50,10 +50,10 @@ http://127.0.0.1:8765
     "connect_timeout_seconds": 15
   },
   "tables": {
-    "schedule": "IATFSC_FABSCHD",
-    "level_desc": "IATLVL_LEVEL_DESC",
-    "fab_plan": "IATCFB_FABPLAN",
-    "fab_dependency": "IATCFB_FABDEPN"
+    "schedule": "YOUR_SCHEDULE_TABLE",
+    "level_desc": "YOUR_LEVEL_DESCRIPTION_TABLE",
+    "fab_plan": "YOUR_FAB_PLAN_TABLE",
+    "fab_dependency": "YOUR_FAB_DEPENDENCY_TABLE"
   },
   "monitor": {
     "process_date": "20251231",

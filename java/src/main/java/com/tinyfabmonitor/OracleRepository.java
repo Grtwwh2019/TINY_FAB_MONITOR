@@ -5,22 +5,19 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Timestamp;
 import java.text.SimpleDateFormat;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Date;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Queue;
 import java.util.Set;
 import java.util.Properties;
 
 final class OracleRepository {
     private final AppConfig config;
     private final String taskSql;
-    private final String dependencySql;
+    private final String upstreamDependencySql;
+    private final String downstreamDependencySql;
 
     OracleRepository(AppConfig config) throws ClassNotFoundException {
         this.config = config;
@@ -29,8 +26,9 @@ final class OracleRepository {
             "(select ldesc.descr from " + config.levelDescTable + " ldesc where ldesc.thread_id=p.thread_id and ldesc.lvl_no=p.lvl_no) Ldes, " +
             "(select fplan.descr from " + config.fabPlanTable + " fplan where fplan.fab_id=p.fab_id and fplan.thread_id=p.thread_id) fdesc " +
             "from " + config.scheduleTable + " p where p.prcss_dt=to_date(?,'yyyymmdd') " +
-            "and p.lvl_no between ? and ? order by 1,2,3,4,5";
-        dependencySql = "select fab_id, depn_id from " + config.dependencyTable + " where fab_id=?";
+            "order by 1,2,3,4,5";
+        upstreamDependencySql = "select fab_id, depn_id from " + config.dependencyTable + " where fab_id=?";
+        downstreamDependencySql = "select fab_id, depn_id from " + config.dependencyTable + " where depn_id=?";
         DriverManager.setLoginTimeout(config.connectTimeoutSeconds);
     }
 
@@ -44,13 +42,13 @@ final class OracleRepository {
         return DriverManager.getConnection(url, properties);
     }
 
+    String taskSqlForTest() { return taskSql; }
+
     List<Models.OracleTask> fetchTasks(Connection connection, String processDate) throws SQLException {
         List<Models.OracleTask> result = new ArrayList<Models.OracleTask>();
         PreparedStatement statement = connection.prepareStatement(taskSql);
         statement.setQueryTimeout(90);
         statement.setString(1, processDate);
-        statement.setInt(2, config.levelMin);
-        statement.setInt(3, config.levelMax);
         ResultSet rows = statement.executeQuery();
         try {
             while (rows.next()) {
@@ -60,8 +58,11 @@ final class OracleRepository {
                 task.levelNo = text(rows.getObject(3));
                 task.fabId = text(rows.getObject(4));
                 task.status = text(rows.getObject(5)).toUpperCase(Locale.ROOT);
-                Timestamp timestamp = rows.getTimestamp(6);
-                task.actTime = timestamp == null ? null : new Date(timestamp.getTime());
+                // ACT_TM 在部分环境是 CHAR，例如 2026-08-01-19.18.09.582000。
+                // 不能调用 getTimestamp，否则 Oracle 驱动会先按自己的格式转换并直接报错。
+                Object actTimeValue = rows.getObject(6);
+                task.actTimePlaceholder = DateCompatibility.isPlaceholder(actTimeValue);
+                task.actTime = parseActTime(actTimeValue);
                 task.levelDescription = text(rows.getObject(7));
                 task.fabDescription = text(rows.getObject(8));
                 result.add(task);
@@ -73,35 +74,41 @@ final class OracleRepository {
         return result;
     }
 
-    List<Models.Dependency> fetchDependencyGraph(Connection connection, List<String> rootIds) throws SQLException {
-        List<Models.Dependency> result = new ArrayList<Models.Dependency>();
-        Queue<String> queue = new ArrayDeque<String>();
-        Set<String> queued = new HashSet<String>();
-        Set<String> seen = new HashSet<String>();
-        for (String id : rootIds) if (id != null && !id.isEmpty() && queued.add(id)) queue.add(id);
-        PreparedStatement statement = connection.prepareStatement(dependencySql);
-        statement.setQueryTimeout(90);
+    List<Models.Dependency> fetchDependencyDag(Connection connection, String rootFabId, Set<String> currentDateFabIds, int maximumDepth) throws SQLException {
+        final PreparedStatement upstream = connection.prepareStatement(upstreamDependencySql);
+        final PreparedStatement downstream = connection.prepareStatement(downstreamDependencySql);
+        upstream.setQueryTimeout(90);
+        downstream.setQueryTimeout(90);
         try {
-            while (!queue.isEmpty()) {
-                String fabId = queue.remove();
-                if (!seen.add(fabId)) continue;
-                statement.setString(1, fabId);
-                ResultSet rows = statement.executeQuery();
-                try {
-                    while (rows.next()) {
-                        String owner = text(rows.getObject(1));
-                        String dependency = text(rows.getObject(2));
-                        if (owner.isEmpty() || dependency.isEmpty()) continue;
-                        result.add(new Models.Dependency(owner, dependency));
-                        if (!seen.contains(dependency) && queued.add(dependency)) queue.add(dependency);
-                    }
-                } finally { rows.close(); }
+            return DependencyGraphBuilder.build(rootFabId, currentDateFabIds, maximumDepth, new DependencyGraphBuilder.Lookup() {
+                public List<Models.Dependency> upstream(String fabId) throws SQLException { return readDependencies(upstream, fabId); }
+                public List<Models.Dependency> downstream(String dependencyId) throws SQLException { return readDependencies(downstream, dependencyId); }
+            });
+        } finally {
+            upstream.close();
+            downstream.close();
+        }
+    }
+
+    private static List<Models.Dependency> readDependencies(PreparedStatement statement, String value) throws SQLException {
+        List<Models.Dependency> result = new ArrayList<Models.Dependency>();
+        statement.setString(1, value);
+        ResultSet rows = statement.executeQuery();
+        try {
+            while (rows.next()) {
+                String owner = text(rows.getObject(1));
+                String dependency = text(rows.getObject(2));
+                if (!owner.isEmpty() && !dependency.isEmpty()) result.add(new Models.Dependency(owner, dependency));
             }
-        } finally { statement.close(); }
+        } finally { rows.close(); }
         return result;
     }
 
     private static String text(Object value) { return value == null ? "" : String.valueOf(value).trim(); }
+
+    static Date parseActTime(Object value) throws SQLException {
+        return DateCompatibility.parseActTime(value);
+    }
 
     private static String normalizeDate(Object value) {
         if (value instanceof Date) return new SimpleDateFormat("yyyyMMdd", Locale.ROOT).format((Date) value);

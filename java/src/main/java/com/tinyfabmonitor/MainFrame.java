@@ -2,6 +2,7 @@ package com.tinyfabmonitor;
 
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
+import javax.swing.JComboBox;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
 import javax.swing.JOptionPane;
@@ -31,7 +32,10 @@ import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 final class MainFrame extends JFrame implements MonitorService.Listener {
     private final MonitorService monitor;
@@ -51,6 +55,17 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
     private final TableRowSorter<TaskTableModel> taskSorter = new TableRowSorter<TaskTableModel>(taskModel);
     private final TableRowSorter<HistoryTableModel> historySorter = new TableRowSorter<HistoryTableModel>(historyModel);
     private final DagPanel dag = new DagPanel();
+    private final JTextField taskFilterField = new JTextField();
+    private final JTextField threadFilterField = new JTextField(9);
+    private final JComboBox<String> statusFilter = new JComboBox<String>();
+    private final JTextField levelMinFilter = new JTextField(4);
+    private final JTextField levelMaxFilter = new JTextField(4);
+    private final JLabel levelFilterError = new JLabel();
+    private final JTextField dagThreadSearch = new JTextField(8);
+    private final JTextField dagLevelSearch = new JTextField(6);
+    private final JTextField dagFabSearch = new JTextField(10);
+    private Models.Dashboard latestDashboard = new Models.Dashboard();
+    private long centeredDagRequestId = -1;
 
     MainFrame(MonitorService monitor, Runnable onClose) {
         super("TINY FAB MONITOR - Oracle FAB 运行监控");
@@ -65,6 +80,7 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
             }
         });
         setContentPane(buildContent());
+        dag.setShowDagAction(monitor::loadDependencyDag);
         taskTable.setRowSorter(taskSorter);
         historyTable.setRowSorter(historySorter);
         taskTable.setDefaultRenderer(Object.class, new StatusRenderer());
@@ -116,12 +132,114 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
 
     private JTabbedPane buildTabs() {
         JTabbedPane tabs = new JTabbedPane();
-        tabs.addTab("任务状态", tablePanel(taskTable, "筛选 FAB / 描述 / 状态", taskSorter));
+        tabs.addTab("任务状态", taskTablePanel());
         JPanel dagContainer = new JPanel(new BorderLayout());
-        JLabel note = new JLabel("  箭头方向：依赖任务 → 后续任务；鼠标滚轮缩放，按住拖动画布。 "); note.setBorder(new EmptyBorder(8, 8, 8, 8));
-        dagContainer.add(note, BorderLayout.NORTH); dagContainer.add(dag, BorderLayout.CENTER); tabs.addTab("依赖 DAG", dagContainer);
+        JLabel note = new JLabel("箭头方向：依赖任务 → 后续任务；鼠标滚轮缩放，按住拖动画布。");
+        JPanel dagTop = new JPanel(new BorderLayout(10, 0)); dagTop.setBorder(new EmptyBorder(8, 10, 8, 10)); dagTop.add(note, BorderLayout.WEST);
+        JPanel search = new JPanel(new FlowLayout(FlowLayout.RIGHT, 5, 0));
+        search.add(new JLabel("Thread ID：")); search.add(dagThreadSearch);
+        search.add(new JLabel("Level No：")); search.add(dagLevelSearch);
+        search.add(new JLabel("FAB ID：")); search.add(dagFabSearch);
+        JButton locate = new JButton("搜索定位"); locate.addActionListener(e -> locateDagTask()); search.add(locate);
+        dagTop.add(search, BorderLayout.EAST); dagContainer.add(dagTop, BorderLayout.NORTH); dagContainer.add(dag, BorderLayout.CENTER); tabs.addTab("依赖 DAG", dagContainer);
         tabs.addTab("运行历史", tablePanel(historyTable, "筛选日期 / FAB / Thread", historySorter));
         return tabs;
+    }
+
+    private JPanel taskTablePanel() {
+        JPanel panel = new JPanel(new BorderLayout(0, 8)); panel.setBorder(new EmptyBorder(10, 10, 10, 10));
+        taskFilterField.setPreferredSize(new Dimension(280, 30));
+        threadFilterField.setToolTipText("Thread ID 包含匹配");
+        statusFilter.addItem("全部状态");
+        levelMinFilter.setToolTipText("Level No 起始值（包含）");
+        levelMaxFilter.setToolTipText("Level No 结束值（包含）");
+        levelFilterError.setForeground(new Color(190, 35, 35));
+        JPanel top = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
+        top.add(levelFilterError); top.add(new JLabel("Thread ID：")); top.add(threadFilterField);
+        top.add(new JLabel("Level No：")); top.add(levelMinFilter); top.add(new JLabel("至")); top.add(levelMaxFilter);
+        top.add(new JLabel("状态：")); top.add(statusFilter); top.add(new JLabel("任务筛选：")); top.add(taskFilterField); panel.add(top, BorderLayout.NORTH);
+        Runnable update = this::applyTaskFilter;
+        taskFilterField.getDocument().addDocumentListener(new DocumentListener() {
+            public void insertUpdate(DocumentEvent e) { update.run(); } public void removeUpdate(DocumentEvent e) { update.run(); } public void changedUpdate(DocumentEvent e) { update.run(); }
+        });
+        threadFilterField.getDocument().addDocumentListener(new DocumentListener() {
+            public void insertUpdate(DocumentEvent e) { update.run(); } public void removeUpdate(DocumentEvent e) { update.run(); } public void changedUpdate(DocumentEvent e) { update.run(); }
+        });
+        DocumentListener levelListener = new DocumentListener() {
+            public void insertUpdate(DocumentEvent e) { update.run(); } public void removeUpdate(DocumentEvent e) { update.run(); } public void changedUpdate(DocumentEvent e) { update.run(); }
+        };
+        levelMinFilter.getDocument().addDocumentListener(levelListener);
+        levelMaxFilter.getDocument().addDocumentListener(levelListener);
+        statusFilter.addActionListener(e -> update.run());
+        panel.add(new JScrollPane(taskTable), BorderLayout.CENTER); return panel;
+    }
+
+    private void applyTaskFilter() {
+        String text = taskFilterField.getText();
+        final String wantedThread = threadFilterField.getText().trim().toLowerCase(java.util.Locale.ROOT);
+        String status = String.valueOf(statusFilter.getSelectedItem());
+        final String wantedText = text == null ? "" : text.trim().toLowerCase();
+        final String wantedStatus = "全部状态".equals(status) ? "" : status;
+        final Integer minLevel;
+        final Integer maxLevel;
+        try {
+            minLevel = ViewLogic.parseLevelBound(levelMinFilter.getText());
+            maxLevel = ViewLogic.parseLevelBound(levelMaxFilter.getText());
+        } catch (IllegalArgumentException e) {
+            levelFilterError.setText("Level 必须是整数");
+            levelFilterError.setToolTipText(e.getMessage());
+            return;
+        }
+        if (minLevel != null && maxLevel != null && minLevel > maxLevel) {
+            levelFilterError.setText("起始值不能大于结束值");
+            levelFilterError.setToolTipText("Level No 起始值必须小于或等于结束值");
+            return;
+        }
+        levelFilterError.setText(""); levelFilterError.setToolTipText(null);
+        if (wantedText.isEmpty() && wantedThread.isEmpty() && wantedStatus.isEmpty() && minLevel == null && maxLevel == null) { taskSorter.setRowFilter(null); return; }
+        taskSorter.setRowFilter(new RowFilter<TaskTableModel, Integer>() {
+            @Override public boolean include(Entry<? extends TaskTableModel, ? extends Integer> entry) {
+                Models.TaskView task = taskModel.rowAt(entry.getIdentifier());
+                if (!wantedStatus.isEmpty() && !wantedStatus.equalsIgnoreCase(task.status)) return false;
+                if (!ViewLogic.threadContains(task.threadId, wantedThread)) return false;
+                if (!ViewLogic.levelInRange(task.levelNo, minLevel, maxLevel)) return false;
+                if (wantedText.isEmpty()) return true;
+                for (int i = 0; i < entry.getValueCount(); i++) if (entry.getStringValue(i).toLowerCase().contains(wantedText)) return true;
+                return false;
+            }
+        });
+    }
+
+    private void locateDagTask() {
+        String thread = dagThreadSearch.getText().trim();
+        String level = dagLevelSearch.getText().trim();
+        String fab = dagFabSearch.getText().trim();
+        if (thread.isEmpty() && level.isEmpty() && fab.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "请至少输入一个搜索条件", "搜索定位", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        List<Models.TaskView> matches = ViewLogic.findDagTasks(latestDashboard.tasks, thread, level, fab);
+        if (matches.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "当前业务日期中找不到匹配任务", "未找到", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        Models.TaskView target;
+        if (matches.size() == 1) {
+            target = matches.get(0);
+        } else {
+            TaskChoice[] choices = new TaskChoice[matches.size()];
+            for (int i = 0; i < matches.size(); i++) choices[i] = new TaskChoice(matches.get(i));
+            TaskChoice selected = (TaskChoice) JOptionPane.showInputDialog(this, "找到多个任务，请选择需要定位的任务：", "选择任务", JOptionPane.PLAIN_MESSAGE, null, choices, choices[0]);
+            if (selected == null) return;
+            target = selected.task;
+        }
+        monitor.loadDependencyDag(target.fabId);
+    }
+
+    private static class TaskChoice {
+        final Models.TaskView task;
+        TaskChoice(Models.TaskView task) { this.task = task; }
+        @Override public String toString() { return "Thread " + task.threadId + " / Level " + task.levelNo + " / FAB " + task.fabId + " / 状态 " + task.status; }
     }
 
     private JPanel tablePanel(JTable table, String placeholder, TableRowSorter<?> sorter) {
@@ -143,6 +261,7 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
     @Override public void dashboardChanged() { SwingUtilities.invokeLater(() -> render(monitor.dashboard())); }
 
     private void render(Models.Dashboard dashboard) {
+        latestDashboard = dashboard;
         if (!dateField.hasFocus()) dateField.setText(dashboard.processDate);
         connection.setText(dashboard.polling ? "● 正在读取" : dashboard.connected ? "● Oracle 已连接" : dashboard.lastError.isEmpty() ? "● 等待连接" : "● Oracle 连接失败");
         connection.setForeground(dashboard.connected ? new Color(22, 143, 98) : dashboard.lastError.isEmpty() ? Color.DARK_GRAY : new Color(216, 59, 59));
@@ -155,7 +274,34 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
             if ("E".equals(task.status) || !task.anomalyTimes.isEmpty()) anomalies++;
         }
         runningMetric.setText(String.valueOf(running)); completedMetric.setText(String.valueOf(completed)); anomalyMetric.setText(String.valueOf(anomalies)); historyMetric.setText(String.valueOf(dashboard.totalHistoricalRuns));
+        updateStatusOptions(dashboard.tasks);
         taskModel.setRows(dashboard.tasks); historyModel.setRows(dashboard.recentRuns); dag.setDashboard(dashboard);
+        if (!dashboard.dagLoading && dashboard.dagError.isEmpty() && !dashboard.dagRootFabId.isEmpty() && centeredDagRequestId != dashboard.dagRequestId) {
+            centeredDagRequestId = dashboard.dagRequestId;
+            SwingUtilities.invokeLater(() -> dag.focusFabId(dashboard.dagRootFabId));
+        }
+    }
+
+    private void updateStatusOptions(List<Models.TaskView> tasks) {
+        String selected = String.valueOf(statusFilter.getSelectedItem());
+        Set<String> found = new LinkedHashSet<String>();
+        for (String standard : new String[]{"W", "I", "E", "B", "R"}) {
+            for (Models.TaskView task : tasks) if (standard.equalsIgnoreCase(task.status)) { found.add(standard); break; }
+        }
+        List<String> other = new ArrayList<String>();
+        for (Models.TaskView task : tasks) {
+            String status = task.status == null ? "" : task.status.trim().toUpperCase(java.util.Locale.ROOT);
+            if (!status.isEmpty() && !found.contains(status) && !Arrays.asList("W", "I", "E", "B", "R").contains(status)) other.add(status);
+        }
+        Collections.sort(other); found.addAll(other);
+        List<String> current = new ArrayList<String>();
+        for (int i = 1; i < statusFilter.getItemCount(); i++) current.add(statusFilter.getItemAt(i));
+        if (current.equals(new ArrayList<String>(found))) return;
+        statusFilter.removeAllItems(); statusFilter.addItem("全部状态");
+        for (String status : found) statusFilter.addItem(status);
+        boolean restored = false;
+        for (int i = 0; i < statusFilter.getItemCount(); i++) if (statusFilter.getItemAt(i).equals(selected)) { statusFilter.setSelectedIndex(i); restored = true; break; }
+        if (!restored) statusFilter.setSelectedIndex(0);
     }
 
     private static JPanel metricCard(String title, String note, JLabel value, Color accent) {
@@ -167,7 +313,7 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
     private static JButton button(String title, Color color) { JButton button = new JButton(title); button.setForeground(Color.WHITE); button.setBackground(color); button.setFocusPainted(false); return button; }
     private static JTable table(AbstractTableModel model) {
         JTable table = new JTable(model); table.setRowHeight(42); table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF); table.setFillsViewportHeight(true);
-        int[] widths = model instanceof TaskTableModel ? new int[]{230, 210, 65, 135, 135, 135, 155, 240} : new int[]{95, 145, 145, 135, 135, 125, 260};
+        int[] widths = model instanceof TaskTableModel ? new int[]{135, 220, 210, 65, 135, 135, 135, 155, 240} : new int[]{95, 145, 145, 135, 135, 125, 260};
         for (int i = 0; i < widths.length; i++) table.getColumnModel().getColumn(i).setPreferredWidth(widths[i]);
         return table;
     }
@@ -175,7 +321,7 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
     private static class StatusRenderer extends DefaultTableCellRenderer {
         @Override public java.awt.Component getTableCellRendererComponent(JTable table, Object value, boolean selected, boolean focus, int row, int column) {
             java.awt.Component component = super.getTableCellRendererComponent(table, value, selected, focus, row, column);
-            if (!selected && column == 2) {
+            if (!selected && column == 3) {
                 String status = String.valueOf(value); component.setForeground("E".equals(status) ? new Color(190, 35, 35) : "I".equals(status) ? new Color(22, 93, 255) : "R".equals(status) ? new Color(10, 125, 82) : Color.DARK_GRAY);
                 component.setFont(component.getFont().deriveFont(Font.BOLD));
             } else if (!selected) component.setForeground(Color.DARK_GRAY);
@@ -184,20 +330,22 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
     }
 
     private static class TaskTableModel extends AbstractTableModel {
-        private final String[] columns = {"FAB / 描述", "Thread / Level", "状态", "状态开始时间", "I 开始时间", "当前 / 本次时长", "历史平均", "异常时间"};
+        private final String[] columns = {"FAB ID", "FAB 描述", "Thread / Level", "状态", "状态开始时间", "I 开始时间", "当前 / 本次时长", "历史平均", "异常时间"};
         private List<Models.TaskView> rows = new ArrayList<Models.TaskView>();
         void setRows(List<Models.TaskView> rows) { this.rows = new ArrayList<Models.TaskView>(rows); fireTableDataChanged(); }
+        Models.TaskView rowAt(int row) { return rows.get(row); }
         public int getRowCount() { return rows.size(); } public int getColumnCount() { return columns.length; } public String getColumnName(int c) { return columns[c]; }
         public Object getValueAt(int row, int column) {
             Models.TaskView t = rows.get(row);
             switch (column) {
-                case 0: return t.fabId + (t.fabDescription.isEmpty() ? "" : "  " + t.fabDescription);
-                case 1: return t.threadId + " / " + t.levelNo + (t.levelDescription.isEmpty() ? "" : "  " + t.levelDescription);
-                case 2: return t.status;
-                case 3: return UiFormat.dateTime(t.actTime);
-                case 4: return UiFormat.dateTime(t.startedAt);
-                case 5: return t.completedAt != null ? UiFormat.duration(t.lastDurationSeconds) : t.startedAt != null ? UiFormat.duration(t.currentDurationSeconds) : "--";
-                case 6: return t.completedRunCount >= 2 ? UiFormat.duration(t.averageDurationSeconds) + "  (" + t.completedRunCount + "次)" : "--  (" + t.completedRunCount + "次)";
+                case 0: return t.fabId;
+                case 1: return t.fabDescription;
+                case 2: return t.threadId + " / " + t.levelNo + (t.levelDescription.isEmpty() ? "" : "  " + t.levelDescription);
+                case 3: return t.status;
+                case 4: return t.actTimePlaceholder ? "无有效时间" : UiFormat.dateTime(t.actTime);
+                case 5: return UiFormat.dateTime(t.startedAt);
+                case 6: return t.completedAt != null ? UiFormat.duration(t.lastDurationSeconds) : t.startedAt != null ? UiFormat.duration(t.currentDurationSeconds) : "--";
+                case 7: return t.completedRunCount >= 2 ? UiFormat.duration(t.averageDurationSeconds) + "  (" + t.completedRunCount + "次)" : "--  (" + t.completedRunCount + "次)";
                 default: return UiFormat.anomalies(t.anomalyTimes);
             }
         }

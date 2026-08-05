@@ -63,6 +63,20 @@ public class MonitorServiceTest {
         assertEquals(1, run.anomalyTimes.size());
     }
 
+    @Test public void allUniqueTasksAreShownUsingTheirLatestStatus() {
+        Models.OracleTask oldI = task("20251231", "1", "41", "FAB-A", "I", 1000L);
+        Models.OracleTask latestR = task("20251231", "1", "41", "FAB-A", "R", 3000L);
+        Models.OracleTask running = task("20251231", "1", "42", "FAB-B", "I", 2000L);
+        Models.OracleTask waiting = task("20251231", "1", "43", "FAB-C", "W", 1500L);
+        java.util.List<Models.OracleTask> result = MonitorService.selectLatestTasks(Arrays.asList(latestR, running, oldI, waiting));
+        assertEquals(3, result.size());
+        java.util.Map<String, String> statuses = new java.util.HashMap<String, String>();
+        for (Models.OracleTask task : result) statuses.put(task.fabId, task.status);
+        assertEquals("R", statuses.get("FAB-A"));
+        assertEquals("I", statuses.get("FAB-B"));
+        assertEquals("W", statuses.get("FAB-C"));
+    }
+
     private static void observe(MonitorService monitor, Models.TaskKey key, String status, long at) throws Exception {
         Models.OracleTask task = new Models.OracleTask();
         task.processDate = key.processDate; task.threadId = key.threadId; task.levelNo = key.levelNo; task.fabId = key.fabId;
@@ -72,5 +86,9 @@ public class MonitorServiceTest {
 
     private static Models.RunRecord completed(Models.TaskKey key, long start, long duration) {
         Models.RunRecord run = new Models.RunRecord(); run.task = key; run.startedAt = new Date(start); run.completedAt = new Date(start + duration * 1000L); run.durationSeconds = duration; return run;
+    }
+
+    private static Models.OracleTask task(String date, String thread, String level, String fab, String status, long at) {
+        Models.OracleTask task = new Models.OracleTask(); task.processDate = date; task.threadId = thread; task.levelNo = level; task.fabId = fab; task.status = status; task.actTime = new Date(at); return task;
     }
 }

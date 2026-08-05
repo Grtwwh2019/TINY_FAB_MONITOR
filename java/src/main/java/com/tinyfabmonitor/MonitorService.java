@@ -37,6 +37,10 @@ final class MonitorService implements AutoCloseable {
     private String processDate;
     private List<Models.OracleTask> tasks = new ArrayList<Models.OracleTask>();
     private List<Models.Dependency> dependencies = new ArrayList<Models.Dependency>();
+    private String dagRootFabId = "";
+    private boolean dagLoading;
+    private String dagError = "";
+    private long dagRequestId;
     private boolean connected;
     private Date lastPollAt;
     private Date nextPollAt;
@@ -74,6 +78,10 @@ final class MonitorService implements AutoCloseable {
             processDate = date;
             tasks = new ArrayList<Models.OracleTask>();
             dependencies = new ArrayList<Models.Dependency>();
+            dagRootFabId = "";
+            dagLoading = false;
+            dagError = "";
+            dagRequestId++;
             lastError = "";
         }
         store.update(state -> state.selectedProcessDate = date);
@@ -89,29 +97,30 @@ final class MonitorService implements AutoCloseable {
         logger.info("开始读取业务日期 " + date);
         try {
             List<Models.OracleTask> fetchedTasks;
-            List<Models.Dependency> fetchedDependencies;
             Connection connection = repository.open();
             try {
-                fetchedTasks = repository.fetchTasks(connection, date);
+                fetchedTasks = selectLatestTasks(repository.fetchTasks(connection, date));
                 applyTaskStates(fetchedTasks);
-                Set<String> seen = new HashSet<String>();
-                List<String> roots = new ArrayList<String>();
-                for (Models.OracleTask task : fetchedTasks) if (!task.fabId.isEmpty() && seen.add(task.fabId)) roots.add(task.fabId);
-                fetchedDependencies = repository.fetchDependencyGraph(connection, roots);
             } finally { connection.close(); }
 
             Date now = new Date();
             synchronized (lock) {
                 if (date.equals(processDate)) {
                     tasks = fetchedTasks;
-                    dependencies = fetchedDependencies;
+                    if (!dagRootFabId.isEmpty() && !containsFabId(fetchedTasks, dagRootFabId)) {
+                        dependencies = new ArrayList<Models.Dependency>();
+                        dagRootFabId = "";
+                        dagLoading = false;
+                        dagError = "中心 FAB 已不在当前业务日期任务中";
+                        dagRequestId++;
+                    }
                     connected = true;
                     lastPollAt = now;
                     nextPollAt = new Date(now.getTime() + TimeUnit.MINUTES.toMillis(config.pollIntervalMinutes));
                     lastError = "";
                 }
             }
-            logger.info("读取完成：" + fetchedTasks.size() + " 个任务，" + fetchedDependencies.size() + " 条依赖");
+            logger.info("读取完成：" + fetchedTasks.size() + " 个任务");
         } catch (Exception e) {
             logger.log(Level.WARNING, "轮询失败", e);
             Date now = new Date();
@@ -125,6 +134,58 @@ final class MonitorService implements AutoCloseable {
             polling.set(false);
             fireChanged();
         }
+    }
+
+    void loadDependencyDag(String requestedFabId) {
+        final String date;
+        final String root;
+        final Set<String> allowed = new HashSet<String>();
+        final long requestId;
+        synchronized (lock) {
+            root = canonicalFabId(tasks, requestedFabId);
+            if (root == null) {
+                dagError = "FAB 不属于当前业务日期：" + requestedFabId;
+                dagLoading = false;
+                dependencies = new ArrayList<Models.Dependency>();
+                dagRootFabId = "";
+                fireChangedLater();
+                return;
+            }
+            for (Models.OracleTask task : tasks) if (task.fabId != null && !task.fabId.isEmpty()) allowed.add(task.fabId);
+            date = processDate;
+            dagRootFabId = root;
+            dependencies = new ArrayList<Models.Dependency>();
+            dagLoading = true;
+            dagError = "";
+            requestId = ++dagRequestId;
+        }
+        fireChanged();
+        scheduler.execute(() -> {
+            try {
+                logger.info("读取 FAB " + root + " 的上下游依赖（各最多 15 层）");
+                List<Models.Dependency> fetched;
+                Connection connection = repository.open();
+                try { fetched = repository.fetchDependencyDag(connection, root, allowed, 15); }
+                finally { connection.close(); }
+                synchronized (lock) {
+                    if (requestId == dagRequestId && date.equals(processDate) && root.equals(dagRootFabId)) {
+                        dependencies = fetched;
+                        dagLoading = false;
+                        dagError = "";
+                    }
+                }
+                logger.info("依赖读取完成：中心 " + root + "，" + fetched.size() + " 条依赖");
+            } catch (Exception e) {
+                logger.log(Level.WARNING, "依赖 DAG 读取失败", e);
+                synchronized (lock) {
+                    if (requestId == dagRequestId) {
+                        dependencies = new ArrayList<Models.Dependency>();
+                        dagLoading = false;
+                        dagError = rootMessage(e);
+                    }
+                }
+            } finally { fireChanged(); }
+        });
     }
 
     void applyTaskStates(final List<Models.OracleTask> observed) throws IOException {
@@ -189,6 +250,10 @@ final class MonitorService implements AutoCloseable {
             dashboard.lastPollAt = copy(lastPollAt);
             dashboard.nextPollAt = copy(nextPollAt);
             dashboard.lastError = lastError;
+            dashboard.dagRootFabId = dagRootFabId;
+            dashboard.dagLoading = dagLoading;
+            dashboard.dagError = dagError;
+            dashboard.dagRequestId = dagRequestId;
         }
         Models.PersistedState state = store.snapshot();
         Map<String, Models.GroupStat> stats = buildGroupStats(state.runs);
@@ -265,10 +330,31 @@ final class MonitorService implements AutoCloseable {
         return result;
     }
 
+    static List<Models.OracleTask> selectLatestTasks(List<Models.OracleTask> observed) {
+        Map<String, Models.OracleTask> latest = new LinkedHashMap<String, Models.OracleTask>();
+        for (Models.OracleTask task : observed) {
+            Models.OracleTask previous = latest.get(task.fullId());
+            if (previous == null || previous.actTime == null ||
+                (task.actTime != null && task.actTime.after(previous.actTime))) {
+                latest.put(task.fullId(), task);
+            }
+        }
+        return new ArrayList<Models.OracleTask>(latest.values());
+    }
+
     private void fireChanged() {
         List<Listener> copy;
         synchronized (listeners) { copy = new ArrayList<Listener>(listeners); }
         for (Listener listener : copy) listener.dashboardChanged();
+    }
+
+    private void fireChangedLater() { scheduler.execute(this::fireChanged); }
+
+    private static boolean containsFabId(List<Models.OracleTask> values, String fabId) { return canonicalFabId(values, fabId) != null; }
+    private static String canonicalFabId(List<Models.OracleTask> values, String fabId) {
+        if (fabId == null) return null;
+        for (Models.OracleTask task : values) if (task.fabId != null && task.fabId.equalsIgnoreCase(fabId.trim())) return task.fabId;
+        return null;
     }
 
     private static Models.TaskKey keyOf(Models.TaskKey source) {
@@ -278,7 +364,7 @@ final class MonitorService implements AutoCloseable {
     private static Models.TaskView viewOf(Models.OracleTask task) {
         Models.TaskView view = new Models.TaskView();
         view.processDate = task.processDate; view.threadId = task.threadId; view.levelNo = task.levelNo; view.fabId = task.fabId;
-        view.status = task.status; view.actTime = copy(task.actTime); view.levelDescription = task.levelDescription; view.fabDescription = task.fabDescription;
+        view.status = task.status; view.actTime = copy(task.actTime); view.actTimePlaceholder = task.actTimePlaceholder; view.levelDescription = task.levelDescription; view.fabDescription = task.fabDescription;
         return view;
     }
 

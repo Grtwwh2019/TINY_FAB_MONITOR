@@ -29,6 +29,7 @@ final class Models {
     static class OracleTask extends TaskKey {
         public String status = "";
         public Date actTime;
+        public boolean actTimePlaceholder;
         public String levelDescription = "";
         public String fabDescription = "";
     }
@@ -100,6 +101,10 @@ final class Models {
         String lastError = "";
         List<TaskView> tasks = new ArrayList<TaskView>();
         List<Dependency> dependencies = new ArrayList<Dependency>();
+        String dagRootFabId = "";
+        boolean dagLoading;
+        String dagError = "";
+        long dagRequestId;
         Map<String, Long> historicalAverageByFab = new LinkedHashMap<String, Long>();
         List<RunRecord> recentRuns = new ArrayList<RunRecord>();
         int totalHistoricalRuns;
