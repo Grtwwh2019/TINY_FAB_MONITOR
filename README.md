@@ -2,6 +2,16 @@
 
 一个面向 Windows 10/11 x64 的轻量级 Oracle FAB 状态监控工具。它定时读取任务状态，记录 `I`、`E`、`B`、`R` 状态事件，计算运行时长和跨日期历史平均值，并生成 FAB 依赖 DAG。
 
+## Java 8 桌面版
+
+仓库的 `java/` 目录提供 Java 8 Swing 桌面版。它不启动网页服务器、不监听端口，并将 Oracle JDBC 与 JSON 依赖合并进单个可执行 Fat JAR；运行端只需准备 64 位 JRE 8。
+
+```text
+java -jar TinyFabMonitor.jar
+```
+
+Java 版使用同目录的 `config.properties`，并兼容 Go/EXE 版生成的 `data/state.json`。详细说明见 [`java/README-ZH.md`](java/README-ZH.md)。
+
 ## 主要功能
 
 - Oracle 连接、业务表名、业务日期和轮询间隔均通过外部 JSON 配置。
@@ -92,4 +102,3 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -H=wi
 ## 准确性说明
 
 程序按配置间隔读取当前状态。两次轮询之间快速出现并结束的状态可能无法捕获；状态时间以数据库中的 `act_tm` 为准。
-

@@ -11,8 +11,12 @@ outputs/
 work/
 *.exe
 *.zip
+*.jar
+outputs-java/
 
 # OS and editor files
 .DS_Store
 .idea/
 .vscode/
+java/.m2/
+java/target/
