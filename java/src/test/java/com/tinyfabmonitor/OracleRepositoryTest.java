@@ -51,8 +51,28 @@ public class OracleRepositoryTest {
             "monitor.level_max=also-ignored\n";
         Files.write(configFile, config.getBytes(StandardCharsets.UTF_8));
         AppConfig appConfig = AppConfig.load(configFile, directory);
+        assertEquals(5, appConfig.dagUpstreamLevels);
+        assertEquals(5, appConfig.dagDownstreamLevels);
         String sql = new OracleRepository(appConfig).taskSqlForTest().toLowerCase(Locale.ROOT);
         org.junit.Assert.assertTrue(sql.contains("p.prcss_dt=to_date(?,'yyyymmdd')"));
         org.junit.Assert.assertFalse(sql.contains("lvl_no between"));
+    }
+
+    @Test public void dependencyQueriesTrimOracleCharColumnsBeforeMatching() throws Exception {
+        Path directory = Files.createTempDirectory("tiny-fab-dependency-config");
+        Path configFile = directory.resolve("config.properties");
+        String config = "oracle.host=db.example\n" +
+            "oracle.service_name=ORCL\n" +
+            "oracle.username=user\n" +
+            "oracle.password=password\n" +
+            "tables.schedule=TEST_SCHEDULE_TABLE\n" +
+            "tables.level_desc=TEST_LEVEL_DESCRIPTION_TABLE\n" +
+            "tables.fab_plan=TEST_FAB_PLAN_TABLE\n" +
+            "tables.fab_dependency=TEST_FAB_DEPENDENCY_TABLE\n" +
+            "monitor.process_date=20251231\n";
+        Files.write(configFile, config.getBytes(StandardCharsets.UTF_8));
+        OracleRepository repository = new OracleRepository(AppConfig.load(configFile, directory));
+        assertTrue(repository.upstreamDependencySqlForTest().toLowerCase(Locale.ROOT).contains("where trim(fab_id)=?"));
+        assertTrue(repository.downstreamDependencySqlForTest().toLowerCase(Locale.ROOT).contains("where trim(depn_id)=?"));
     }
 }

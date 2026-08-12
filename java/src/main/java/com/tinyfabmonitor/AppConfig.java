@@ -26,6 +26,8 @@ final class AppConfig {
     final String dependencyTable;
     final String processDate;
     final int pollIntervalMinutes;
+    final int dagUpstreamLevels;
+    final int dagDownstreamLevels;
 
     private AppConfig(Path baseDirectory, Properties p) {
         this.baseDirectory = baseDirectory;
@@ -45,6 +47,8 @@ final class AppConfig {
         processDate = trim(p.getProperty("monitor.process_date"));
         if (!DATE.matcher(processDate).matches()) throw new IllegalArgumentException("monitor.process_date 必须是 YYYYMMDD 格式");
         pollIntervalMinutes = positiveInt(p, "monitor.poll_interval_minutes", 5);
+        dagUpstreamLevels = rangedInt(p, "monitor.dag_upstream_levels", 5, 0, 15);
+        dagDownstreamLevels = rangedInt(p, "monitor.dag_downstream_levels", 5, 0, 15);
         String storage = trim(p.getProperty("storage.directory"));
         if (storage.isEmpty()) storage = "data";
         Path configured = java.nio.file.Paths.get(storage);
@@ -77,6 +81,12 @@ final class AppConfig {
     private static int positiveInt(Properties p, String key, int fallback) {
         int value = integer(p, key, fallback);
         if (value <= 0) throw new IllegalArgumentException(key + " 必须大于 0");
+        return value;
+    }
+
+    private static int rangedInt(Properties p, String key, int fallback, int minimum, int maximum) {
+        int value = integer(p, key, fallback);
+        if (value < minimum || value > maximum) throw new IllegalArgumentException(key + " 必须是 " + minimum + "–" + maximum + " 的整数");
         return value;
     }
 

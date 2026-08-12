@@ -51,6 +51,30 @@ public class MainFrameTest {
         assertFalse(ViewLogic.threadContains("TEST_DAILY_001", "weekly"));
     }
 
+    @Test public void validatesDagDepthAndRetentionRanges() {
+        assertEquals(0, ViewLogic.parseDagDepth("0"));
+        assertEquals(15, ViewLogic.parseDagDepth("15"));
+        assertEquals(14, ViewLogic.parseRetentionDays("14"));
+        assertEquals(3650, ViewLogic.parseRetentionDays("3650"));
+        assertInvalid(() -> ViewLogic.parseDagDepth("16"));
+        assertInvalid(() -> ViewLogic.parseRetentionDays("13"));
+    }
+
+    @Test public void hideCompletedKeepsOnlyTheCompletedCenterFab() {
+        Models.TaskView center = task("T", "41", "FAB-CENTER", "R");
+        Models.TaskView completed = task("T", "42", "FAB-DONE", "R");
+        Models.TaskView running = task("T", "43", "FAB-RUNNING", "I");
+        assertTrue(ViewLogic.showDagTask(center, "FAB-CENTER", true));
+        assertFalse(ViewLogic.showDagTask(completed, "FAB-CENTER", true));
+        assertTrue(ViewLogic.showDagTask(running, "FAB-CENTER", true));
+        assertTrue(ViewLogic.showDagTask(completed, "FAB-CENTER", false));
+    }
+
+    private static void assertInvalid(Runnable action) {
+        try { action.run(); org.junit.Assert.fail("应拒绝越界输入"); }
+        catch (IllegalArgumentException expected) {}
+    }
+
     private static Models.TaskView task(String thread, String level, String fab, String status) {
         Models.TaskView task = new Models.TaskView(); task.threadId = thread; task.levelNo = level; task.fabId = fab; task.status = status; return task;
     }

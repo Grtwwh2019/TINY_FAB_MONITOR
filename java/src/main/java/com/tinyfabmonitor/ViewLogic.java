@@ -52,5 +52,28 @@ final class ViewLogic {
         return wanted.isEmpty() || normalized(threadId).contains(wanted);
     }
 
+    static int parseDagDepth(String value) {
+        return parseRequiredRange(value, 0, 15, "DAG 层数");
+    }
+
+    static int parseRetentionDays(String value) {
+        return parseRequiredRange(value, 14, 3650, "保留天数");
+    }
+
+    static boolean showDagTask(Models.TaskView task, String rootFabId, boolean hideCompleted) {
+        if (!hideCompleted || !"R".equalsIgnoreCase(task.status)) return true;
+        return task.fabId != null && rootFabId != null && task.fabId.trim().equalsIgnoreCase(rootFabId.trim());
+    }
+
+    private static int parseRequiredRange(String value, int minimum, int maximum, String label) {
+        String text = value == null ? "" : value.trim();
+        if (text.isEmpty()) throw new IllegalArgumentException(label + "不能为空，必须是 " + minimum + "–" + maximum + " 的整数");
+        final int parsed;
+        try { parsed = Integer.parseInt(text); }
+        catch (NumberFormatException e) { throw new IllegalArgumentException(label + "必须是 " + minimum + "–" + maximum + " 的整数", e); }
+        if (parsed < minimum || parsed > maximum) throw new IllegalArgumentException(label + "必须是 " + minimum + "–" + maximum + " 的整数");
+        return parsed;
+    }
+
     private static String normalized(String value) { return value == null ? "" : value.trim().toLowerCase(Locale.ROOT); }
 }

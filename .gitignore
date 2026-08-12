@@ -12,6 +12,7 @@ work/
 *.exe
 *.zip
 *.jar
+!release/TinyFabMonitor.jar
 outputs-java/
 
 # OS and editor files

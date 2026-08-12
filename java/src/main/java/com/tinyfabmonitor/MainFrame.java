@@ -2,6 +2,7 @@ package com.tinyfabmonitor;
 
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
+import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
@@ -64,6 +65,11 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
     private final JTextField dagThreadSearch = new JTextField(8);
     private final JTextField dagLevelSearch = new JTextField(6);
     private final JTextField dagFabSearch = new JTextField(10);
+    private final JTextField dagUpstreamLevels = new JTextField(2);
+    private final JTextField dagDownstreamLevels = new JTextField(2);
+    private final JCheckBox dagHideCompleted = new JCheckBox("隐藏状态 R");
+    private final JLabel dagEta = new JLabel("预计完成：请先搜索中心 FAB");
+    private final JTextField retentionDays = new JTextField("14", 4);
     private Models.Dashboard latestDashboard = new Models.Dashboard();
     private long centeredDagRequestId = -1;
 
@@ -79,8 +85,10 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
                 if (JOptionPane.showConfirmDialog(MainFrame.this, "确定退出监控程序？", "退出", JOptionPane.YES_NO_OPTION) == JOptionPane.YES_OPTION) onClose.run();
             }
         });
+        dagUpstreamLevels.setText(String.valueOf(monitor.defaultDagUpstreamLevels()));
+        dagDownstreamLevels.setText(String.valueOf(monitor.defaultDagDownstreamLevels()));
         setContentPane(buildContent());
-        dag.setShowDagAction(monitor::loadDependencyDag);
+        dag.setShowDagAction(this::requestDag);
         taskTable.setRowSorter(taskSorter);
         historyTable.setRowSorter(historySorter);
         taskTable.setDefaultRenderer(Object.class, new StatusRenderer());
@@ -140,10 +148,30 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
         search.add(new JLabel("Thread ID：")); search.add(dagThreadSearch);
         search.add(new JLabel("Level No：")); search.add(dagLevelSearch);
         search.add(new JLabel("FAB ID：")); search.add(dagFabSearch);
+        search.add(new JLabel("上游层数：")); search.add(dagUpstreamLevels);
+        search.add(new JLabel("下游层数：")); search.add(dagDownstreamLevels);
+        dagHideCompleted.setOpaque(false); dagHideCompleted.addActionListener(e -> dag.setHideCompleted(dagHideCompleted.isSelected())); search.add(dagHideCompleted);
         JButton locate = new JButton("搜索定位"); locate.addActionListener(e -> locateDagTask()); search.add(locate);
-        dagTop.add(search, BorderLayout.EAST); dagContainer.add(dagTop, BorderLayout.NORTH); dagContainer.add(dag, BorderLayout.CENTER); tabs.addTab("依赖 DAG", dagContainer);
-        tabs.addTab("运行历史", tablePanel(historyTable, "筛选日期 / FAB / Thread", historySorter));
+        dagEta.setBorder(new EmptyBorder(6, 0, 0, 0)); dagEta.setForeground(new Color(22, 93, 255));
+        dagTop.add(search, BorderLayout.EAST); dagTop.add(dagEta, BorderLayout.SOUTH);
+        dagContainer.add(dagTop, BorderLayout.NORTH); dagContainer.add(dag, BorderLayout.CENTER); tabs.addTab("依赖 DAG", dagContainer);
+        tabs.addTab("运行历史", historyPanel());
         return tabs;
+    }
+
+    private JPanel historyPanel() {
+        JPanel panel = new JPanel(new BorderLayout(0, 8)); panel.setBorder(new EmptyBorder(10, 10, 10, 10));
+        JTextField filter = new JTextField(); filter.setToolTipText("筛选日期 / FAB / Thread / 描述"); filter.setPreferredSize(new Dimension(260, 30));
+        JPanel top = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
+        top.add(new JLabel("保留天数：")); top.add(retentionDays);
+        JButton cleanup = new JButton("清理数据"); cleanup.addActionListener(e -> cleanupHistory()); top.add(cleanup);
+        top.add(new JLabel("历史筛选：")); top.add(filter); panel.add(top, BorderLayout.NORTH);
+        filter.getDocument().addDocumentListener(new DocumentListener() {
+            private void update() { String value = filter.getText().trim(); historySorter.setRowFilter(value.isEmpty() ? null : RowFilter.regexFilter("(?i)" + java.util.regex.Pattern.quote(value))); }
+            public void insertUpdate(DocumentEvent e) { update(); } public void removeUpdate(DocumentEvent e) { update(); } public void changedUpdate(DocumentEvent e) { update(); }
+        });
+        panel.add(new JScrollPane(historyTable), BorderLayout.CENTER);
+        return panel;
     }
 
     private JPanel taskTablePanel() {
@@ -233,7 +261,38 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
             if (selected == null) return;
             target = selected.task;
         }
-        monitor.loadDependencyDag(target.fabId);
+        requestDag(target.fabId);
+    }
+
+    private void requestDag(String fabId) {
+        try {
+            int upstream = ViewLogic.parseDagDepth(dagUpstreamLevels.getText());
+            int downstream = ViewLogic.parseDagDepth(dagDownstreamLevels.getText());
+            monitor.loadDependencyDag(fabId, upstream, downstream);
+        } catch (IllegalArgumentException e) {
+            JOptionPane.showMessageDialog(this, e.getMessage(), "DAG 层数无效", JOptionPane.WARNING_MESSAGE);
+        }
+    }
+
+    private void cleanupHistory() {
+        try {
+            int days = ViewLogic.parseRetentionDays(retentionDays.getText());
+            StateStore.CleanupPreview preview = monitor.previewCleanup(days);
+            if (!preview.hasData()) {
+                JOptionPane.showMessageDialog(this, "没有包含有效业务日期的历史数据", "无需清理", JOptionPane.INFORMATION_MESSAGE); return;
+            }
+            if (!preview.hasChanges()) {
+                JOptionPane.showMessageDialog(this, "当前没有早于 " + preview.cutoffDate + " 的数据", "无需清理", JOptionPane.INFORMATION_MESSAGE); return;
+            }
+            String message = "最新业务日期：" + preview.latestDate + "\n保留起始日期：" + preview.cutoffDate +
+                "\n保留天数：" + days + "\n\n将删除任务跟踪记录：" + preview.trackedToDelete +
+                " 条\n将删除运行历史：" + preview.runsToDelete + " 条\n\n清理前的原始 state.json 将备份并保留24小时。是否继续？";
+            if (JOptionPane.showConfirmDialog(this, message, "确认清理历史数据", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE) != JOptionPane.YES_OPTION) return;
+            monitor.cleanupHistory(days);
+            JOptionPane.showMessageDialog(this, "清理完成。清理前备份将在24小时后自动删除。", "清理完成", JOptionPane.INFORMATION_MESSAGE);
+        } catch (Exception e) {
+            JOptionPane.showMessageDialog(this, e.getMessage(), "清理失败", JOptionPane.ERROR_MESSAGE);
+        }
     }
 
     private static class TaskChoice {
@@ -276,6 +335,10 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
         runningMetric.setText(String.valueOf(running)); completedMetric.setText(String.valueOf(completed)); anomalyMetric.setText(String.valueOf(anomalies)); historyMetric.setText(String.valueOf(dashboard.totalHistoricalRuns));
         updateStatusOptions(dashboard.tasks);
         taskModel.setRows(dashboard.tasks); historyModel.setRows(dashboard.recentRuns); dag.setDashboard(dashboard);
+        if (dashboard.dagLoading) { dagEta.setText("预计完成：正在读取完整上游依赖…"); dagEta.setToolTipText(null); }
+        else if (!dashboard.dagError.isEmpty()) { dagEta.setText("预计完成：依赖读取失败"); dagEta.setToolTipText(dashboard.dagError); }
+        else if (dashboard.dagRootFabId.isEmpty()) { dagEta.setText("预计完成：请先搜索中心 FAB"); dagEta.setToolTipText(null); }
+        else { dagEta.setText(dashboard.dagEta.summary); dagEta.setToolTipText(dashboard.dagEta.detail); }
         if (!dashboard.dagLoading && dashboard.dagError.isEmpty() && !dashboard.dagRootFabId.isEmpty() && centeredDagRequestId != dashboard.dagRequestId) {
             centeredDagRequestId = dashboard.dagRequestId;
             SwingUtilities.invokeLater(() -> dag.focusFabId(dashboard.dagRootFabId));
@@ -313,7 +376,7 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
     private static JButton button(String title, Color color) { JButton button = new JButton(title); button.setForeground(Color.WHITE); button.setBackground(color); button.setFocusPainted(false); return button; }
     private static JTable table(AbstractTableModel model) {
         JTable table = new JTable(model); table.setRowHeight(42); table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF); table.setFillsViewportHeight(true);
-        int[] widths = model instanceof TaskTableModel ? new int[]{135, 220, 210, 65, 135, 135, 135, 155, 240} : new int[]{95, 145, 145, 135, 135, 125, 260};
+        int[] widths = model instanceof TaskTableModel ? new int[]{135, 220, 210, 65, 135, 135, 135, 155, 240} : new int[]{95, 145, 220, 145, 135, 135, 125, 260};
         for (int i = 0; i < widths.length; i++) table.getColumnModel().getColumn(i).setPreferredWidth(widths[i]);
         return table;
     }
@@ -345,23 +408,23 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
                 case 4: return t.actTimePlaceholder ? "无有效时间" : UiFormat.dateTime(t.actTime);
                 case 5: return UiFormat.dateTime(t.startedAt);
                 case 6: return t.completedAt != null ? UiFormat.duration(t.lastDurationSeconds) : t.startedAt != null ? UiFormat.duration(t.currentDurationSeconds) : "--";
-                case 7: return t.completedRunCount >= 2 ? UiFormat.duration(t.averageDurationSeconds) + "  (" + t.completedRunCount + "次)" : "--  (" + t.completedRunCount + "次)";
+                case 7: return t.completedRunCount >= 1 ? UiFormat.duration(t.averageDurationSeconds) + "  (" + t.completedRunCount + "次)" : "--  (" + t.completedRunCount + "次)";
                 default: return UiFormat.anomalies(t.anomalyTimes);
             }
         }
     }
 
     private static class HistoryTableModel extends AbstractTableModel {
-        private final String[] columns = {"业务日期", "FAB", "Thread / Level", "I 时间", "R 时间", "持续时长", "异常时间点"};
+        private final String[] columns = {"业务日期", "FAB", "FAB 描述", "Thread / Level", "I 时间", "R 时间", "持续时长", "异常时间点"};
         private List<Models.RunRecord> rows = new ArrayList<Models.RunRecord>();
         void setRows(List<Models.RunRecord> rows) { this.rows = new ArrayList<Models.RunRecord>(rows); fireTableDataChanged(); }
         public int getRowCount() { return rows.size(); } public int getColumnCount() { return columns.length; } public String getColumnName(int c) { return columns[c]; }
         public Object getValueAt(int row, int column) {
             Models.RunRecord r = rows.get(row);
             switch (column) {
-                case 0: return r.task.processDate; case 1: return r.task.fabId; case 2: return r.task.threadId + " / " + r.task.levelNo;
-                case 3: return UiFormat.dateTime(r.startedAt); case 4: return UiFormat.dateTime(r.completedAt);
-                case 5: return r.startedAt == null ? "仅异常记录" : r.completedAt == null ? "运行中" : UiFormat.duration(r.durationSeconds); default: return UiFormat.anomalies(r.anomalyTimes);
+                case 0: return r.task.processDate; case 1: return r.task.fabId; case 2: return r.fabDescription == null || r.fabDescription.isEmpty() ? "--" : r.fabDescription;
+                case 3: return r.task.threadId + " / " + r.task.levelNo; case 4: return UiFormat.dateTime(r.startedAt); case 5: return UiFormat.dateTime(r.completedAt);
+                case 6: return r.startedAt == null ? "仅异常记录" : r.completedAt == null ? "运行中" : UiFormat.duration(r.durationSeconds); default: return UiFormat.anomalies(r.anomalyTimes);
             }
         }
     }

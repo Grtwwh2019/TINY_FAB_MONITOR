@@ -43,6 +43,8 @@ final class DagPanel extends JPanel {
     private String focusedId = "";
     private String emptyMessage = "请输入 FAB ID 并点击搜索定位";
     private Consumer<String> showDagAction;
+    private Models.Dashboard latestDashboard = new Models.Dashboard();
+    private boolean hideCompleted;
 
     private static class Node {
         String id = "", description = "", threadId = "", levelNo = "", status = "";
@@ -50,6 +52,7 @@ final class DagPanel extends JPanel {
         boolean actTimePlaceholder;
         long currentDuration, lastDuration, average;
         int completedCount;
+        String etaSummary = "", etaDetail = "";
         int x, y;
     }
 
@@ -82,6 +85,20 @@ final class DagPanel extends JPanel {
     void setShowDagAction(Consumer<String> action) { this.showDagAction = action; }
 
     void setDashboard(Models.Dashboard dashboard) {
+        latestDashboard = dashboard;
+        rebuild();
+    }
+
+    void setHideCompleted(boolean hide) {
+        if (hideCompleted == hide) return;
+        hideCompleted = hide;
+        rebuild();
+    }
+
+    boolean isHideCompleted() { return hideCompleted; }
+
+    private void rebuild() {
+        Models.Dashboard dashboard = latestDashboard;
         nodes.clear();
         edges = new ArrayList<Models.Dependency>();
         if (dashboard.dagLoading) emptyMessage = "正在读取上下游依赖…";
@@ -106,7 +123,15 @@ final class DagPanel extends JPanel {
             Models.TaskView previous = tasksByFab.get(id);
             if (previous == null || previous.actTime == null || (task.actTime != null && task.actTime.after(previous.actTime))) tasksByFab.put(id, task);
         }
-        for (Models.TaskView task : tasksByFab.values()) nodes.put(normalize(task.fabId), nodeOf(task));
+        for (Models.TaskView task : tasksByFab.values()) {
+            if (!ViewLogic.showDagTask(task, dashboard.dagRootFabId, hideCompleted)) continue;
+            nodes.put(normalize(task.fabId), nodeOf(task));
+        }
+        Node rootNode = nodes.get(normalize(dashboard.dagRootFabId));
+        if (rootNode != null && dashboard.dagEta != null) {
+            rootNode.etaSummary = dashboard.dagEta.summary;
+            rootNode.etaDetail = dashboard.dagEta.detail;
+        }
         for (Models.Dependency edge : dashboard.dependencies) {
             if (nodes.containsKey(normalize(edge.fabId)) && nodes.containsKey(normalize(edge.dependencyId))) edges.add(edge);
         }
@@ -215,12 +240,14 @@ final class DagPanel extends JPanel {
         if (node == null) return null;
         String statusTime = node.actTimePlaceholder ? "无有效时间" : UiFormat.dateTime(node.actTime);
         String duration = node.startedAt == null ? "--" : node.completedAt != null ? UiFormat.duration(node.lastDuration) : UiFormat.duration(node.currentDuration);
-        String average = node.completedCount >= 2 ? UiFormat.duration(node.average) + "（" + node.completedCount + "次）" : "--（" + node.completedCount + "次）";
+        String average = node.completedCount >= 1 ? UiFormat.duration(node.average) + "（" + node.completedCount + "次）" : "--（" + node.completedCount + "次）";
+        String eta = node.etaSummary.isEmpty() ? "" : "<br><b>预计完成：</b>" + html(node.etaSummary.replace("预计完成：", "")) +
+            (node.etaDetail.isEmpty() ? "" : "<br><b>估算依据：</b>" + html(node.etaDetail));
         return "<html><b>FAB ID：</b>" + html(node.id) + "<br><b>描述：</b>" + html(empty(node.description)) +
             "<br><b>Thread ID：</b>" + html(node.threadId) + "<br><b>Level No：</b>" + html(node.levelNo) +
             "<br><b>状态：</b>" + html(node.status) + "<br><b>状态开始时间：</b>" + statusTime +
             "<br><b>I 开始时间：</b>" + UiFormat.dateTime(node.startedAt) + "<br><b>当前/本次时长：</b>" + duration +
-            "<br><b>历史平均：</b>" + average + "</html>";
+            "<br><b>历史平均：</b>" + average + eta + "</html>";
     }
 
     private boolean showPopup(MouseEvent event) {

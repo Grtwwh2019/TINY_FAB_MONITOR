@@ -9,7 +9,6 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -37,6 +36,7 @@ final class MonitorService implements AutoCloseable {
     private String processDate;
     private List<Models.OracleTask> tasks = new ArrayList<Models.OracleTask>();
     private List<Models.Dependency> dependencies = new ArrayList<Models.Dependency>();
+    private List<Models.Dependency> etaUpstreamDependencies = new ArrayList<Models.Dependency>();
     private String dagRootFabId = "";
     private boolean dagLoading;
     private String dagError = "";
@@ -78,6 +78,7 @@ final class MonitorService implements AutoCloseable {
             processDate = date;
             tasks = new ArrayList<Models.OracleTask>();
             dependencies = new ArrayList<Models.Dependency>();
+            etaUpstreamDependencies = new ArrayList<Models.Dependency>();
             dagRootFabId = "";
             dagLoading = false;
             dagError = "";
@@ -109,6 +110,7 @@ final class MonitorService implements AutoCloseable {
                     tasks = fetchedTasks;
                     if (!dagRootFabId.isEmpty() && !containsFabId(fetchedTasks, dagRootFabId)) {
                         dependencies = new ArrayList<Models.Dependency>();
+                        etaUpstreamDependencies = new ArrayList<Models.Dependency>();
                         dagRootFabId = "";
                         dagLoading = false;
                         dagError = "中心 FAB 已不在当前业务日期任务中";
@@ -137,9 +139,16 @@ final class MonitorService implements AutoCloseable {
     }
 
     void loadDependencyDag(String requestedFabId) {
+        loadDependencyDag(requestedFabId, config.dagUpstreamLevels, config.dagDownstreamLevels);
+    }
+
+    void loadDependencyDag(String requestedFabId, int upstreamLevels, int downstreamLevels) {
+        if (upstreamLevels < 0 || upstreamLevels > 15 || downstreamLevels < 0 || downstreamLevels > 15) {
+            throw new IllegalArgumentException("DAG 上下游层数必须是 0–15 的整数");
+        }
         final String date;
         final String root;
-        final Set<String> allowed = new HashSet<String>();
+        final List<Models.OracleTask> currentTasks;
         final long requestId;
         synchronized (lock) {
             root = canonicalFabId(tasks, requestedFabId);
@@ -147,14 +156,16 @@ final class MonitorService implements AutoCloseable {
                 dagError = "FAB 不属于当前业务日期：" + requestedFabId;
                 dagLoading = false;
                 dependencies = new ArrayList<Models.Dependency>();
+                etaUpstreamDependencies = new ArrayList<Models.Dependency>();
                 dagRootFabId = "";
                 fireChangedLater();
                 return;
             }
-            for (Models.OracleTask task : tasks) if (task.fabId != null && !task.fabId.isEmpty()) allowed.add(task.fabId);
+            currentTasks = new ArrayList<Models.OracleTask>(tasks);
             date = processDate;
             dagRootFabId = root;
             dependencies = new ArrayList<Models.Dependency>();
+            etaUpstreamDependencies = new ArrayList<Models.Dependency>();
             dagLoading = true;
             dagError = "";
             requestId = ++dagRequestId;
@@ -162,24 +173,26 @@ final class MonitorService implements AutoCloseable {
         fireChanged();
         scheduler.execute(() -> {
             try {
-                logger.info("读取 FAB " + root + " 的上下游依赖（各最多 15 层）");
-                List<Models.Dependency> fetched;
+                logger.info("读取 FAB " + root + " 的依赖（上游 " + upstreamLevels + " 层，下游 " + downstreamLevels + " 层）");
+                Models.DependencyAnalysis fetched;
                 Connection connection = repository.open();
-                try { fetched = repository.fetchDependencyDag(connection, root, allowed, 15); }
+                try { fetched = repository.fetchDependencyAnalysis(connection, root, currentTasks, upstreamLevels, downstreamLevels); }
                 finally { connection.close(); }
                 synchronized (lock) {
                     if (requestId == dagRequestId && date.equals(processDate) && root.equals(dagRootFabId)) {
-                        dependencies = fetched;
+                        dependencies = fetched.displayDependencies;
+                        etaUpstreamDependencies = fetched.etaUpstreamDependencies;
                         dagLoading = false;
                         dagError = "";
                     }
                 }
-                logger.info("依赖读取完成：中心 " + root + "，" + fetched.size() + " 条依赖");
+                logger.info("依赖读取完成：中心 " + root + "，画面 " + fetched.displayDependencies.size() + " 条，ETA 上游 " + fetched.etaUpstreamDependencies.size() + " 条");
             } catch (Exception e) {
                 logger.log(Level.WARNING, "依赖 DAG 读取失败", e);
                 synchronized (lock) {
                     if (requestId == dagRequestId) {
                         dependencies = new ArrayList<Models.Dependency>();
+                        etaUpstreamDependencies = new ArrayList<Models.Dependency>();
                         dagLoading = false;
                         dagError = rootMessage(e);
                     }
@@ -235,6 +248,7 @@ final class MonitorService implements AutoCloseable {
                 } else if (active != null) {
                     appendEvent(active, event);
                 }
+                if (active != null && task.fabDescription != null && !task.fabDescription.trim().isEmpty()) active.fabDescription = task.fabDescription.trim();
                 tracked.lastStatus = task.status;
                 tracked.lastActTime = task.actTime;
             }
@@ -265,12 +279,13 @@ final class MonitorService implements AutoCloseable {
             total[0] += run.durationSeconds; total[1]++;
         }
         for (Map.Entry<String, long[]> entry : fabTotals.entrySet()) {
-            if (entry.getValue()[1] >= 2) dashboard.historicalAverageByFab.put(entry.getKey(), entry.getValue()[0] / entry.getValue()[1]);
+            if (entry.getValue()[1] >= 1) dashboard.historicalAverageByFab.put(entry.getKey(), entry.getValue()[0] / entry.getValue()[1]);
         }
         List<Models.OracleTask> taskSnapshot;
         synchronized (lock) {
             taskSnapshot = new ArrayList<Models.OracleTask>(tasks);
             dashboard.dependencies = new ArrayList<Models.Dependency>(dependencies);
+            dashboard.etaUpstreamDependencies = new ArrayList<Models.Dependency>(etaUpstreamDependencies);
         }
         Date now = new Date();
         for (Models.OracleTask task : taskSnapshot) {
@@ -300,9 +315,31 @@ final class MonitorService implements AutoCloseable {
         Collections.sort(dashboard.tasks, Comparator.comparing(t -> t.threadId + "|" + t.levelNo + "|" + t.fabId));
         dashboard.totalHistoricalRuns = state.runs.size();
         dashboard.recentRuns = new ArrayList<Models.RunRecord>(state.runs);
+        Map<String, String> currentDescriptions = new HashMap<String, String>();
+        for (Models.OracleTask task : taskSnapshot) {
+            if (task.fabDescription != null && !task.fabDescription.trim().isEmpty()) currentDescriptions.put(task.groupId(), task.fabDescription.trim());
+        }
+        for (Models.RunRecord run : dashboard.recentRuns) {
+            if ((run.fabDescription == null || run.fabDescription.trim().isEmpty()) && run.task != null) {
+                String matched = currentDescriptions.get(run.task.groupId());
+                if (matched != null) run.fabDescription = matched;
+            }
+        }
         Collections.sort(dashboard.recentRuns, (a, b) -> eventTime(b).compareTo(eventTime(a)));
         if (dashboard.recentRuns.size() > 200) dashboard.recentRuns = new ArrayList<Models.RunRecord>(dashboard.recentRuns.subList(0, 200));
+        if (!dashboard.dagRootFabId.isEmpty() && !dashboard.dagLoading && dashboard.dagError.isEmpty()) {
+            dashboard.dagEta = EtaCalculator.calculate(dashboard.dagRootFabId, dashboard.tasks, dashboard.etaUpstreamDependencies, now);
+        }
         return dashboard;
+    }
+
+    int defaultDagUpstreamLevels() { return config.dagUpstreamLevels; }
+    int defaultDagDownstreamLevels() { return config.dagDownstreamLevels; }
+    StateStore.CleanupPreview previewCleanup(int retentionDays) { return store.previewCleanup(retentionDays); }
+    StateStore.CleanupPreview cleanupHistory(int retentionDays) throws IOException {
+        StateStore.CleanupPreview result = store.cleanup(retentionDays);
+        fireChanged();
+        return result;
     }
 
     static Map<String, Models.GroupStat> buildGroupStats(List<Models.RunRecord> runs) {
@@ -322,7 +359,7 @@ final class MonitorService implements AutoCloseable {
             Acc acc = entry.getValue();
             Models.GroupStat stat = new Models.GroupStat();
             stat.count = acc.count;
-            stat.average = acc.count >= 2 ? acc.total / acc.count : 0L;
+            stat.average = acc.count >= 1 ? acc.total / acc.count : 0L;
             stat.last = acc.last.durationSeconds;
             stat.lastRun = acc.last;
             result.put(entry.getKey(), stat);

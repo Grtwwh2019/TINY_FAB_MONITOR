@@ -44,6 +44,7 @@ final class Models {
     static class RunRecord {
         public String id = "";
         public TaskKey task = new TaskKey();
+        public String fabDescription = "";
         public Date startedAt;
         public Date completedAt;
         public long durationSeconds;
@@ -75,6 +76,22 @@ final class Models {
         }
     }
 
+    static class DependencyAnalysis {
+        List<Dependency> displayDependencies = new ArrayList<Dependency>();
+        List<Dependency> etaUpstreamDependencies = new ArrayList<Dependency>();
+    }
+
+    static class DagEta {
+        boolean available;
+        boolean completed;
+        boolean overdue;
+        Date estimatedCompletion;
+        long remainingSeconds;
+        String summary = "";
+        String detail = "";
+        List<String> criticalPath = new ArrayList<String>();
+    }
+
     static class TaskView extends OracleTask {
         public Date startedAt;
         public Date completedAt;
@@ -101,10 +118,12 @@ final class Models {
         String lastError = "";
         List<TaskView> tasks = new ArrayList<TaskView>();
         List<Dependency> dependencies = new ArrayList<Dependency>();
+        List<Dependency> etaUpstreamDependencies = new ArrayList<Dependency>();
         String dagRootFabId = "";
         boolean dagLoading;
         String dagError = "";
         long dagRequestId;
+        DagEta dagEta = new DagEta();
         Map<String, Long> historicalAverageByFab = new LinkedHashMap<String, Long>();
         List<RunRecord> recentRuns = new ArrayList<RunRecord>();
         int totalHistoricalRuns;

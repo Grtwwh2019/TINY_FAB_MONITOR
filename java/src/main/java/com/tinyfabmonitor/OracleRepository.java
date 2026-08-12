@@ -7,9 +7,12 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Date;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.Properties;
 
@@ -27,8 +30,10 @@ final class OracleRepository {
             "(select fplan.descr from " + config.fabPlanTable + " fplan where fplan.fab_id=p.fab_id and fplan.thread_id=p.thread_id) fdesc " +
             "from " + config.scheduleTable + " p where p.prcss_dt=to_date(?,'yyyymmdd') " +
             "order by 1,2,3,4,5";
-        upstreamDependencySql = "select fab_id, depn_id from " + config.dependencyTable + " where fab_id=?";
-        downstreamDependencySql = "select fab_id, depn_id from " + config.dependencyTable + " where depn_id=?";
+        // FAB/依赖字段在部分 Oracle 环境中是 CHAR。JDBC setString 绑定为 VARCHAR2，
+        // 直接使用“字段=?”可能因为 CHAR 尾部补空格而无法命中，导致 DAG 只显示中心节点。
+        upstreamDependencySql = "select fab_id, depn_id from " + config.dependencyTable + " where trim(fab_id)=?";
+        downstreamDependencySql = "select fab_id, depn_id from " + config.dependencyTable + " where trim(depn_id)=?";
         DriverManager.setLoginTimeout(config.connectTimeoutSeconds);
     }
 
@@ -43,6 +48,8 @@ final class OracleRepository {
     }
 
     String taskSqlForTest() { return taskSql; }
+    String upstreamDependencySqlForTest() { return upstreamDependencySql; }
+    String downstreamDependencySqlForTest() { return downstreamDependencySql; }
 
     List<Models.OracleTask> fetchTasks(Connection connection, String processDate) throws SQLException {
         List<Models.OracleTask> result = new ArrayList<Models.OracleTask>();
@@ -74,35 +81,76 @@ final class OracleRepository {
         return result;
     }
 
-    List<Models.Dependency> fetchDependencyDag(Connection connection, String rootFabId, Set<String> currentDateFabIds, int maximumDepth) throws SQLException {
-        final PreparedStatement upstream = connection.prepareStatement(upstreamDependencySql);
-        final PreparedStatement downstream = connection.prepareStatement(downstreamDependencySql);
-        upstream.setQueryTimeout(90);
-        downstream.setQueryTimeout(90);
-        try {
-            return DependencyGraphBuilder.build(rootFabId, currentDateFabIds, maximumDepth, new DependencyGraphBuilder.Lookup() {
-                public List<Models.Dependency> upstream(String fabId) throws SQLException { return readDependencies(upstream, fabId); }
-                public List<Models.Dependency> downstream(String dependencyId) throws SQLException { return readDependencies(downstream, dependencyId); }
-            });
-        } finally {
-            upstream.close();
-            downstream.close();
+    Models.DependencyAnalysis fetchDependencyAnalysis(Connection connection, String rootFabId, List<Models.OracleTask> currentDateTasks,
+                                                       int upstreamDepth, int downstreamDepth) throws SQLException {
+        return DependencySearch.load(rootFabId, currentDateTasks, upstreamDepth, downstreamDepth, new CachedBatchLookup(connection));
+    }
+
+    private class CachedBatchLookup implements DependencySearch.BatchLookup {
+        private static final int ORACLE_BATCH_SIZE = 500;
+        private final Connection connection;
+        private final Map<String, List<Models.Dependency>> upstreamCache = new LinkedHashMap<String, List<Models.Dependency>>();
+        private final Map<String, List<Models.Dependency>> downstreamCache = new LinkedHashMap<String, List<Models.Dependency>>();
+
+        CachedBatchLookup(Connection connection) { this.connection = connection; }
+
+        public List<Models.Dependency> upstream(Set<String> fabIds) throws SQLException {
+            return cached(fabIds, true, upstreamCache);
+        }
+
+        public List<Models.Dependency> downstream(Set<String> dependencyIds) throws SQLException {
+            return cached(dependencyIds, false, downstreamCache);
+        }
+
+        private List<Models.Dependency> cached(Collection<String> requested, boolean upstream,
+                                               Map<String, List<Models.Dependency>> cache) throws SQLException {
+            List<String> missing = new ArrayList<String>();
+            for (String value : requested) {
+                String key = normalizeFab(value);
+                if (!key.isEmpty() && !cache.containsKey(key)) { cache.put(key, new ArrayList<Models.Dependency>()); missing.add(value.trim()); }
+            }
+            for (int offset = 0; offset < missing.size(); offset += ORACLE_BATCH_SIZE) {
+                int end = Math.min(missing.size(), offset + ORACLE_BATCH_SIZE);
+                loadBatch(missing.subList(offset, end), upstream, cache);
+            }
+            Map<String, Models.Dependency> unique = new LinkedHashMap<String, Models.Dependency>();
+            for (String value : requested) {
+                List<Models.Dependency> values = cache.get(normalizeFab(value));
+                if (values == null) continue;
+                for (Models.Dependency edge : values) unique.put(normalizeFab(edge.dependencyId) + "->" + normalizeFab(edge.fabId), edge);
+            }
+            return new ArrayList<Models.Dependency>(unique.values());
+        }
+
+        private void loadBatch(List<String> values, boolean upstream, Map<String, List<Models.Dependency>> cache) throws SQLException {
+            if (values.isEmpty()) return;
+            String column = upstream ? "fab_id" : "depn_id";
+            StringBuilder sql = new StringBuilder("select fab_id, depn_id from ").append(config.dependencyTable)
+                .append(" where trim(").append(column).append(")");
+            if (values.size() == 1) sql.append("=?");
+            else {
+                sql.append(" in (");
+                for (int i = 0; i < values.size(); i++) { if (i > 0) sql.append(','); sql.append('?'); }
+                sql.append(')');
+            }
+            PreparedStatement statement = connection.prepareStatement(sql.toString());
+            statement.setQueryTimeout(90);
+            for (int i = 0; i < values.size(); i++) statement.setString(i + 1, values.get(i));
+            ResultSet rows = statement.executeQuery();
+            try {
+                while (rows.next()) {
+                    String owner = text(rows.getObject(1)), dependency = text(rows.getObject(2));
+                    if (owner.isEmpty() || dependency.isEmpty()) continue;
+                    Models.Dependency edge = new Models.Dependency(owner, dependency);
+                    String key = normalizeFab(upstream ? owner : dependency);
+                    List<Models.Dependency> bucket = cache.get(key);
+                    if (bucket != null) bucket.add(edge);
+                }
+            } finally { rows.close(); statement.close(); }
         }
     }
 
-    private static List<Models.Dependency> readDependencies(PreparedStatement statement, String value) throws SQLException {
-        List<Models.Dependency> result = new ArrayList<Models.Dependency>();
-        statement.setString(1, value);
-        ResultSet rows = statement.executeQuery();
-        try {
-            while (rows.next()) {
-                String owner = text(rows.getObject(1));
-                String dependency = text(rows.getObject(2));
-                if (!owner.isEmpty() && !dependency.isEmpty()) result.add(new Models.Dependency(owner, dependency));
-            }
-        } finally { rows.close(); }
-        return result;
-    }
+    private static String normalizeFab(String value) { return value == null ? "" : value.trim().toUpperCase(Locale.ROOT); }
 
     private static String text(Object value) { return value == null ? "" : String.valueOf(value).trim(); }
 

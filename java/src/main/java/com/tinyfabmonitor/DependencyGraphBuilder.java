@@ -25,15 +25,15 @@ final class DependencyGraphBuilder {
 
     private DependencyGraphBuilder() {}
 
-    static List<Models.Dependency> build(String rootFabId, Set<String> currentDateFabIds, int maximumDepth, Lookup lookup) throws SQLException {
+    static List<Models.Dependency> build(String rootFabId, Set<String> currentDateFabIds, int upstreamDepth, int downstreamDepth, Lookup lookup) throws SQLException {
         Map<String, String> allowed = new LinkedHashMap<String, String>();
         for (String id : currentDateFabIds) if (id != null && !id.trim().isEmpty()) allowed.put(normalize(id), id.trim());
         String root = allowed.get(normalize(rootFabId));
-        if (root == null || maximumDepth <= 0) return new ArrayList<Models.Dependency>();
+        if (root == null || (upstreamDepth <= 0 && downstreamDepth <= 0)) return new ArrayList<Models.Dependency>();
 
         Map<String, Models.Dependency> edges = new LinkedHashMap<String, Models.Dependency>();
-        traverse(root, maximumDepth, true, allowed, edges, lookup);
-        traverse(root, maximumDepth, false, allowed, edges, lookup);
+        if (upstreamDepth > 0) traverse(root, upstreamDepth, true, allowed, edges, lookup);
+        if (downstreamDepth > 0) traverse(root, downstreamDepth, false, allowed, edges, lookup);
         return new ArrayList<Models.Dependency>(edges.values());
     }
 

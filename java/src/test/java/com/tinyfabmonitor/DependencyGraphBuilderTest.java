@@ -23,7 +23,7 @@ public class DependencyGraphBuilderTest {
         lookup.edge("B", "OUTSIDE"); lookup.edge("BEYOND", "OUTSIDE");
         lookup.edge("OUTSIDE-DOWN", "A"); lookup.edge("BEYOND-DOWN", "OUTSIDE-DOWN");
         Set<String> current = new HashSet<String>(Arrays.asList("A", "B", "C", "D", "X", "Y", "BEYOND"));
-        List<Models.Dependency> result = DependencyGraphBuilder.build("A", current, 15, lookup);
+        List<Models.Dependency> result = DependencyGraphBuilder.build("A", current, 15, 15, lookup);
         assertEquals(5, result.size());
         assertTrue(has(result, "A", "B")); assertTrue(has(result, "B", "C")); assertTrue(has(result, "C", "D"));
         assertTrue(has(result, "X", "A")); assertTrue(has(result, "Y", "X"));
@@ -39,12 +39,22 @@ public class DependencyGraphBuilderTest {
         previous = "ROOT";
         for (int i = 1; i <= 18; i++) { String id = "D" + i; current.add(id); lookup.edge(id, previous); previous = id; }
         lookup.edge("U3", "ROOT");
-        List<Models.Dependency> result = DependencyGraphBuilder.build("ROOT", current, 15, lookup);
+        List<Models.Dependency> result = DependencyGraphBuilder.build("ROOT", current, 15, 15, lookup);
         assertTrue(has(result, "U14", "U15"));
         assertFalse(has(result, "U15", "U16"));
         assertTrue(has(result, "D15", "D14"));
         assertFalse(has(result, "D16", "D15"));
         assertTrue(result.size() <= 31); // 15 上游 + 15 下游，加一条已发现的循环边。
+    }
+
+    @Test public void upstreamAndDownstreamDepthsAreIndependent() throws Exception {
+        FakeLookup lookup = new FakeLookup();
+        lookup.edge("ROOT", "U1"); lookup.edge("U1", "U2");
+        lookup.edge("D1", "ROOT"); lookup.edge("D2", "D1"); lookup.edge("D3", "D2");
+        Set<String> current = new HashSet<String>(Arrays.asList("ROOT", "U1", "U2", "D1", "D2", "D3"));
+        List<Models.Dependency> result = DependencyGraphBuilder.build("ROOT", current, 1, 2, lookup);
+        assertTrue(has(result, "ROOT", "U1")); assertFalse(has(result, "U1", "U2"));
+        assertTrue(has(result, "D1", "ROOT")); assertTrue(has(result, "D2", "D1")); assertFalse(has(result, "D3", "D2"));
     }
 
     private static boolean has(List<Models.Dependency> values, String owner, String dependency) {

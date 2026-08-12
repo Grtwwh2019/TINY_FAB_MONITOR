@@ -34,13 +34,13 @@ public class MonitorServiceTest {
         assertEquals(1, run.anomalyTimes.size());
     }
 
-    @Test public void averageAppearsFromSecondCompletedRun() {
+    @Test public void averageAppearsFromFirstCompletedRun() {
         Models.TaskKey key1 = new Models.TaskKey("20251231", "T", "42", "F");
         Models.TaskKey key2 = new Models.TaskKey("20260101", "T", "42", "F");
         Models.RunRecord first = completed(key1, 0, 600);
         Map<String, Models.GroupStat> one = MonitorService.buildGroupStats(Arrays.asList(first));
         assertEquals(1, one.get(key1.groupId()).count);
-        assertEquals(0, one.get(key1.groupId()).average);
+        assertEquals(600, one.get(key1.groupId()).average);
         Models.RunRecord second = completed(key2, 1000000, 720);
         Models.GroupStat stat = MonitorService.buildGroupStats(Arrays.asList(first, second)).get(key1.groupId());
         assertEquals(2, stat.count);
@@ -82,6 +82,17 @@ public class MonitorServiceTest {
         task.processDate = key.processDate; task.threadId = key.threadId; task.levelNo = key.levelNo; task.fabId = key.fabId;
         task.status = status; task.actTime = new Date(at);
         monitor.applyTaskStates(Arrays.asList(task));
+    }
+
+    @Test public void fabDescriptionIsPersistedWithRunHistory() throws Exception {
+        Path statePath = java.nio.file.Files.createTempDirectory("tiny-fab-description").resolve("state.json");
+        StateStore store = new StateStore(statePath);
+        store.update(state -> state.selectedProcessDate = "20251231");
+        MonitorService monitor = new MonitorService(null, null, store, java.util.logging.Logger.getAnonymousLogger());
+        Models.OracleTask task = task("20251231", "T", "41", "FAB-A", "I", 1000L);
+        task.fabDescription = "Test FAB description";
+        monitor.applyTaskStates(Arrays.asList(task));
+        assertEquals("Test FAB description", new StateStore(statePath).snapshot().runs.get(0).fabDescription);
     }
 
     private static Models.RunRecord completed(Models.TaskKey key, long start, long duration) {
