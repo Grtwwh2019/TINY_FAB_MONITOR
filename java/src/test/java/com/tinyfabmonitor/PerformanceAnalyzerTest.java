@@ -84,10 +84,48 @@ public class PerformanceAnalyzerTest {
         assertTrue(result.criticalPath.size() <= 2);
     }
 
+    @Test public void unfinishedUnrelatedTaskDoesNotInvalidateCompletedEndBoundary() {
+        Map<String, List<Models.OracleTask>> days = new LinkedHashMap<String, List<Models.OracleTask>>();
+        days.put("20260102", Arrays.asList(task("20260102", "A", "R", 1000), task("20260102", "B", "R", 2200), task("20260102", "OTHER", "W", 0)));
+        days.put("20260101", Arrays.asList(task("20260101", "A", "R", 500), task("20260101", "B", "R", 1500), task("20260101", "OTHER", "I", 1400)));
+        Models.AnalysisResult result = analyze(days, new ArrayList<Models.RunRecord>(), new ArrayList<Models.Dependency>(), "20260102", Arrays.asList("20260101"));
+        assertTrue(result.targetComplete);
+        assertEquals(1000, result.baselineDurationSeconds);
+    }
+
+    @Test public void overallFinishUsesConfiguredEndTaskInsteadOfLatestUnrelatedR() {
+        Map<String, List<Models.OracleTask>> days = new LinkedHashMap<String, List<Models.OracleTask>>();
+        days.put("20260102", Arrays.asList(task("20260102", "A", "R", 1000), task("20260102", "B", "R", 2000), task("20260102", "LATE", "R", 4000)));
+        days.put("20260101", Arrays.asList(task("20260101", "A", "R", 500), task("20260101", "B", "R", 1500), task("20260101", "LATE", "R", 5000)));
+        Models.AnalysisResult result = analyze(days, new ArrayList<Models.RunRecord>(), new ArrayList<Models.Dependency>(), "20260102", Arrays.asList("20260101"));
+        assertEquals(2000L * 1000L, result.targetFinish.getTime());
+        assertEquals(1000, result.targetDurationSeconds);
+    }
+
+    @Test public void startFallsBackToRMinusEarlierHistoricalAverage() {
+        Map<String, List<Models.OracleTask>> days = new LinkedHashMap<String, List<Models.OracleTask>>();
+        days.put("20260102", Arrays.asList(task("20260102", "A", "R", 1000), task("20260102", "B", "R", 2500)));
+        days.put("20260101", Arrays.asList(task("20260101", "A", "R", 800), task("20260101", "B", "R", 1600)));
+        List<Models.RunRecord> runs = Arrays.asList(run("20251231", "A", 100, 400));
+        Models.AnalysisResult result = analyze(days, runs, new ArrayList<Models.Dependency>(), "20260102", Arrays.asList("20260101"));
+        assertEquals(700L * 1000L, result.targetStart.getTime());
+        assertTrue(result.targetEstimatedStart);
+        assertTrue(result.startBasis.contains("历史平均"));
+    }
+
     private static Models.AnalysisResult analyze(Map<String, List<Models.OracleTask>> days, List<Models.RunRecord> runs,
                                                  List<Models.Dependency> edges, String target, List<String> baselines) {
         Models.AnalysisRequest request = new Models.AnalysisRequest(); request.analysisDate = target;
+        request.startThreadId = "T"; request.startLevelNo = "41"; request.startFabId = "A";
+        request.endThreadId = "T"; request.endLevelNo = "41";
+        request.endFabId = contains(days.get(target), "ROOT") ? "ROOT" : contains(days.get(target), "B") ? "B" : "A";
+        if (baselines.size() > 1) { request.baselineMode = Models.AnalysisBaselineMode.RECENT_AVERAGE; request.recentDateCount = baselines.size(); }
         return PerformanceAnalyzer.analyze(request, days, runs, edges, baselines, new Date(5000));
+    }
+
+    private static boolean contains(List<Models.OracleTask> tasks, String fab) {
+        for (Models.OracleTask task : tasks) if (fab.equals(task.fabId)) return true;
+        return false;
     }
 
     private static Models.AnalysisTaskMetric find(Models.AnalysisResult result, String fab) {

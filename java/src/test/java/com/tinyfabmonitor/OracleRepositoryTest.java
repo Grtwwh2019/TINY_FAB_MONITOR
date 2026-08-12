@@ -58,9 +58,11 @@ public class OracleRepositoryTest {
         String sql = new OracleRepository(appConfig).taskSqlForTest().toLowerCase(Locale.ROOT);
         org.junit.Assert.assertTrue(sql.contains("p.prcss_dt=to_date(?,'yyyymmdd')"));
         org.junit.Assert.assertFalse(sql.contains("lvl_no between"));
+        org.junit.Assert.assertFalse(sql.contains("select ldesc.descr"));
+        org.junit.Assert.assertFalse(sql.contains("select fplan.descr"));
     }
 
-    @Test public void completedDateQueryUsesOneGroupedReadAndRowLimit() throws Exception {
+    @Test public void completedDateQueryUsesOnlyTheConfiguredEndTaskAndRowLimit() throws Exception {
         Path directory = Files.createTempDirectory("tiny-fab-analysis-config");
         Path configFile = directory.resolve("config.properties");
         String config = "oracle.host=db.example\n" + "oracle.service_name=ORCL\n" + "oracle.username=user\n" + "oracle.password=password\n" +
@@ -70,8 +72,13 @@ public class OracleRepositoryTest {
         Files.write(configFile, config.getBytes(StandardCharsets.UTF_8));
         AppConfig appConfig = AppConfig.load(configFile, directory);
         assertEquals(4, appConfig.pollIntervalMinMinutes); assertEquals(6, appConfig.pollIntervalMaxMinutes);
-        String sql = new OracleRepository(appConfig).completedDatesSqlForTest().toLowerCase(Locale.ROOT);
-        assertTrue(sql.contains("group by p.prcss_dt")); assertTrue(sql.contains("having sum(case")); assertTrue(sql.contains("rownum<=?"));
+        OracleRepository repository = new OracleRepository(appConfig);
+        String sql = repository.endCompletedDatesSqlForTest().toLowerCase(Locale.ROOT);
+        assertTrue(sql.contains("trim(p.thread_id)=?")); assertTrue(sql.contains("trim(p.fab_id)=?"));
+        assertTrue(sql.contains("upper(trim(p.stat_cde))='r'")); assertTrue(sql.contains("rownum<=?"));
+        assertEquals("select fab_id, depn_id from test_fab_dependency_table", repository.allDependenciesSqlForTest().toLowerCase(Locale.ROOT));
+        assertEquals("select thread_id, lvl_no, descr from test_level_description_table", repository.allLevelDescriptionsSqlForTest().toLowerCase(Locale.ROOT));
+        assertEquals("select thread_id, fab_id, descr from test_fab_plan_table", repository.allFabDescriptionsSqlForTest().toLowerCase(Locale.ROOT));
     }
 
     @Test public void dependencyQueriesTrimOracleCharColumnsBeforeMatching() throws Exception {
@@ -90,5 +97,19 @@ public class OracleRepositoryTest {
         OracleRepository repository = new OracleRepository(AppConfig.load(configFile, directory));
         assertTrue(repository.upstreamDependencySqlForTest().toLowerCase(Locale.ROOT).contains("where trim(fab_id)=?"));
         assertTrue(repository.downstreamDependencySqlForTest().toLowerCase(Locale.ROOT).contains("where trim(depn_id)=?"));
+    }
+
+    @Test public void analysisBoundaryDefaultsMustBeCompleteTriplesWhenConfigured() throws Exception {
+        Path directory = Files.createTempDirectory("tiny-fab-boundary-config");
+        Path configFile = directory.resolve("config.properties");
+        String config = "oracle.host=db.example\n" + "oracle.service_name=ORCL\n" + "oracle.username=user\n" + "oracle.password=password\n" +
+            "tables.schedule=SCHEDULE_TABLE\n" + "tables.level_desc=LEVEL_TABLE\n" + "tables.fab_plan=FAB_TABLE\n" +
+            "tables.fab_dependency=DEPENDENCY_TABLE\n" + "monitor.process_date=20251231\n" +
+            "monitor.analysis_start_thread_id=T\n" + "monitor.analysis_start_fab_id=FAB-A\n";
+        Files.write(configFile, config.getBytes(StandardCharsets.UTF_8));
+        boolean failed = false;
+        try { AppConfig.load(configFile, directory); }
+        catch (IllegalArgumentException expected) { failed = expected.getMessage().contains("必须同时配置"); }
+        assertTrue(failed);
     }
 }

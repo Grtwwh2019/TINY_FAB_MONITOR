@@ -54,6 +54,15 @@ final class MonitorService implements AutoCloseable {
     private ScheduledFuture<?> pollFuture;
     private boolean closed;
     private Models.AnalysisState analysisState = new Models.AnalysisState();
+    private final Map<String, List<Models.OracleTask>> analysisTaskCache =
+        new LinkedHashMap<String, List<Models.OracleTask>>(48, .75f, true) {
+            @Override protected boolean removeEldestEntry(Map.Entry<String, List<Models.OracleTask>> eldest) { return size() > 64; }
+        };
+    private final Map<String, List<String>> analysisDateCache =
+        new LinkedHashMap<String, List<String>>(32, .75f, true) {
+            @Override protected boolean removeEldestEntry(Map.Entry<String, List<String>> eldest) { return size() > 64; }
+        };
+    private List<Models.Dependency> allDependencyCache;
 
     MonitorService(AppConfig config, OracleRepository repository, StateStore store, Logger logger) {
         this.config = config;
@@ -132,6 +141,7 @@ final class MonitorService implements AutoCloseable {
                 Connection connection = repository.open();
                 try {
                     fetchedTasks = selectLatestTasks(repository.fetchTasks(connection, date));
+                    cacheTasks(date, fetchedTasks);
                     applyTaskStates(fetchedTasks);
                 } finally { connection.close(); }
             } finally { databaseReadPermit.release(); }
@@ -208,9 +218,11 @@ final class MonitorService implements AutoCloseable {
                 Models.DependencyAnalysis fetched;
                 databaseReadPermit.acquireUninterruptibly();
                 try {
-                    Connection connection = repository.open();
-                    try { fetched = repository.fetchDependencyAnalysis(connection, root, currentTasks, upstreamLevels, downstreamLevels); }
-                    finally { connection.close(); }
+                    AnalysisConnection connection = new AnalysisConnection();
+                    try {
+                        List<Models.Dependency> cached = dependencySnapshot(connection);
+                        fetched = DependencySearch.load(root, currentTasks, upstreamLevels, downstreamLevels, DependencySearch.inMemory(cached));
+                    } finally { connection.close(); }
                 } finally { databaseReadPermit.release(); }
                 synchronized (lock) {
                     if (requestId == dagRequestId && date.equals(processDate) && root.equals(dagRootFabId)) {
@@ -370,6 +382,12 @@ final class MonitorService implements AutoCloseable {
 
     int defaultDagUpstreamLevels() { return config.dagUpstreamLevels; }
     int defaultDagDownstreamLevels() { return config.dagDownstreamLevels; }
+    String defaultAnalysisStartThreadId() { return config.analysisStartThreadId; }
+    String defaultAnalysisStartLevelNo() { return config.analysisStartLevelNo; }
+    String defaultAnalysisStartFabId() { return config.analysisStartFabId; }
+    String defaultAnalysisEndThreadId() { return config.analysisEndThreadId; }
+    String defaultAnalysisEndLevelNo() { return config.analysisEndLevelNo; }
+    String defaultAnalysisEndFabId() { return config.analysisEndFabId; }
     StateStore.CleanupPreview previewCleanup(int retentionDays) { return store.previewCleanup(retentionDays); }
     StateStore.CleanupPreview cleanupHistory(int retentionDays) throws IOException {
         StateStore.CleanupPreview result = store.cleanup(retentionDays);
@@ -389,33 +407,42 @@ final class MonitorService implements AutoCloseable {
         analysisExecutor.execute(() -> {
             try {
                 logger.info("开始耗时分析：" + request.analysisDate + "，模式 " + request.baselineMode);
+                List<Models.RunRecord> analysisRuns = store.snapshot().runs;
                 Map<String, List<Models.OracleTask>> tasksByDate = new LinkedHashMap<String, List<Models.OracleTask>>();
                 List<String> baselineDates;
                 List<Models.Dependency> analysisDependencies;
                 databaseReadPermit.acquireUninterruptibly();
                 try {
-                    Connection connection = repository.open();
+                    AnalysisConnection connection = new AnalysisConnection();
                     try {
                         List<Models.OracleTask> target = filteredTasks(tasksForAnalysisDate(connection, request.analysisDate), request);
                         tasksByDate.put(request.analysisDate, target);
                         if (request.baselineMode == Models.AnalysisBaselineMode.SPECIFIED_DATE) {
                             baselineDates = Collections.singletonList(request.specifiedBaselineDate);
+                            List<Models.OracleTask> baseline = filteredTasks(tasksForAnalysisDate(connection, request.specifiedBaselineDate), request);
+                            tasksByDate.put(request.specifiedBaselineDate, baseline);
                         } else {
-                            int count = request.baselineMode == Models.AnalysisBaselineMode.PREVIOUS_COMPLETE ? 1 : request.recentDateCount;
-                            baselineDates = repository.fetchPreviousCompletedDates(connection, request.analysisDate, count);
+                            List<String> candidates = baselineDateCandidates(connection, request);
+                            int needed = request.baselineMode == Models.AnalysisBaselineMode.PREVIOUS_COMPLETE ? 1 : request.recentDateCount;
+                            baselineDates = new ArrayList<String>();
+                            List<String> rejected = new ArrayList<String>();
+                            for (String date : candidates) {
+                                List<Models.OracleTask> baseline = filteredTasks(tasksForAnalysisDate(connection, date), request);
+                                String issue = PerformanceAnalyzer.baselineIssue(request, date, baseline, analysisRuns);
+                                if (issue == null) {
+                                    baselineDates.add(date); tasksByDate.put(date, baseline);
+                                    if (baselineDates.size() >= needed) break;
+                                } else if (rejected.size() < 3) rejected.add(date + "（" + issue + "）");
+                            }
+                            if (baselineDates.isEmpty() && !rejected.isEmpty()) {
+                                throw new IllegalArgumentException("没有可用的基准日期；候选：" + String.join("；", rejected));
+                            }
                         }
-                        if (baselineDates.isEmpty()) throw new IllegalArgumentException("找不到早于分析日期的完整业务日期");
-                        Set<String> owners = new java.util.LinkedHashSet<String>();
-                        for (Models.OracleTask task : target) owners.add(task.fabId);
-                        for (String date : baselineDates) {
-                            List<Models.OracleTask> baseline = filteredTasks(tasksForAnalysisDate(connection, date), request);
-                            tasksByDate.put(date, baseline);
-                            for (Models.OracleTask task : baseline) owners.add(task.fabId);
-                        }
-                        analysisDependencies = repository.fetchDependenciesForOwners(connection, owners);
+                        if (baselineDates.isEmpty()) throw new IllegalArgumentException("找不到结束基准任务已进入 R 的历史业务日期");
+                        analysisDependencies = dependencySnapshot(connection);
                     } finally { connection.close(); }
                 } finally { databaseReadPermit.release(); }
-                Models.AnalysisResult result = PerformanceAnalyzer.analyze(request, tasksByDate, store.snapshot().runs,
+                Models.AnalysisResult result = PerformanceAnalyzer.analyze(request, tasksByDate, analysisRuns,
                     analysisDependencies, baselineDates, new Date());
                 synchronized (lock) {
                     if (analysisState.requestId == requestId) {
@@ -432,22 +459,64 @@ final class MonitorService implements AutoCloseable {
         });
     }
 
-    private List<Models.OracleTask> tasksForAnalysisDate(Connection connection, String date) throws Exception {
+    private List<Models.OracleTask> tasksForAnalysisDate(AnalysisConnection connection, String date) throws Exception {
         synchronized (lock) {
             if (date.equals(processDate) && !tasks.isEmpty()) return new ArrayList<Models.OracleTask>(tasks);
+            List<Models.OracleTask> cached = analysisTaskCache.get(date);
+            if (cached != null) return new ArrayList<Models.OracleTask>(cached);
         }
-        return selectLatestTasks(repository.fetchTasks(connection, date));
+        List<Models.OracleTask> fetched = selectLatestTasks(repository.fetchTasks(connection.get(), date));
+        cacheTasks(date, fetched);
+        return new ArrayList<Models.OracleTask>(fetched);
+    }
+
+    private List<String> baselineDateCandidates(AnalysisConnection connection, Models.AnalysisRequest request) throws Exception {
+        String key = request.analysisDate + "|" + normalize(request.endThreadId) + "|" + normalize(request.endLevelNo) + "|" + normalize(request.endFabId);
+        synchronized (lock) {
+            List<String> cached = analysisDateCache.get(key);
+            if (cached != null) return new ArrayList<String>(cached);
+        }
+        List<String> fetched = repository.fetchPreviousEndCompletedDates(connection.get(), request.analysisDate,
+            request.endThreadId, request.endLevelNo, request.endFabId, 90);
+        synchronized (lock) { analysisDateCache.put(key, new ArrayList<String>(fetched)); }
+        return fetched;
+    }
+
+    private void cacheTasks(String date, List<Models.OracleTask> values) {
+        synchronized (lock) { analysisTaskCache.put(date, new ArrayList<Models.OracleTask>(values)); }
+    }
+
+    private List<Models.Dependency> dependencySnapshot(AnalysisConnection connection) throws Exception {
+        synchronized (lock) {
+            if (allDependencyCache != null) return new ArrayList<Models.Dependency>(allDependencyCache);
+        }
+        List<Models.Dependency> fetched = repository.fetchAllDependencies(connection.get());
+        synchronized (lock) {
+            if (allDependencyCache == null) allDependencyCache = new ArrayList<Models.Dependency>(fetched);
+            return new ArrayList<Models.Dependency>(allDependencyCache);
+        }
+    }
+
+    private final class AnalysisConnection implements AutoCloseable {
+        private Connection connection;
+        Connection get() throws Exception {
+            if (connection == null) connection = repository.open();
+            return connection;
+        }
+        public void close() throws Exception { if (connection != null) connection.close(); }
     }
 
     private static List<Models.OracleTask> filteredTasks(List<Models.OracleTask> values, Models.AnalysisRequest request) {
         List<Models.OracleTask> result = new ArrayList<Models.OracleTask>();
         String thread = request.threadFilter == null ? "" : request.threadFilter.trim().toUpperCase(Locale.ROOT);
         for (Models.OracleTask task : values) {
-            if (!thread.isEmpty() && (task.threadId == null || !task.threadId.toUpperCase(Locale.ROOT).contains(thread))) continue;
+            boolean boundary = taskMatches(task, request.startThreadId, request.startLevelNo, request.startFabId) ||
+                taskMatches(task, request.endThreadId, request.endLevelNo, request.endFabId);
+            if (!boundary && !thread.isEmpty() && (task.threadId == null || !task.threadId.toUpperCase(Locale.ROOT).contains(thread))) continue;
             Integer level = null;
             try { level = Integer.valueOf(task.levelNo.trim()); } catch (Exception ignored) {}
-            if (request.levelMinimum != null && (level == null || level < request.levelMinimum)) continue;
-            if (request.levelMaximum != null && (level == null || level > request.levelMaximum)) continue;
+            if (!boundary && request.levelMinimum != null && (level == null || level < request.levelMinimum)) continue;
+            if (!boundary && request.levelMaximum != null && (level == null || level > request.levelMaximum)) continue;
             result.add(task);
         }
         return result;
@@ -461,7 +530,21 @@ final class MonitorService implements AutoCloseable {
         }
         if (request.recentDateCount < 2 || request.recentDateCount > 30) throw new IllegalArgumentException("历史平均日期数必须是 2–30");
         if (request.levelMinimum != null && request.levelMaximum != null && request.levelMinimum > request.levelMaximum) throw new IllegalArgumentException("Level No 起始值不能大于结束值");
+        validateBoundaryTask("开始基准任务", request.startThreadId, request.startLevelNo, request.startFabId);
+        validateBoundaryTask("结束基准任务", request.endThreadId, request.endLevelNo, request.endFabId);
     }
+
+    private static void validateBoundaryTask(String label, String threadId, String levelNo, String fabId) {
+        if (blank(threadId) || blank(levelNo) || blank(fabId)) throw new IllegalArgumentException(label + "必须填写 Thread ID、Level No 和 FAB ID");
+    }
+
+    private static boolean taskMatches(Models.TaskKey task, String threadId, String levelNo, String fabId) {
+        return normalize(task.threadId).equals(normalize(threadId)) && normalize(task.levelNo).equals(normalize(levelNo)) &&
+            normalize(task.fabId).equals(normalize(fabId));
+    }
+
+    private static boolean blank(String value) { return value == null || value.trim().isEmpty(); }
+    private static String normalize(String value) { return value == null ? "" : value.trim().toUpperCase(Locale.ROOT); }
 
     private static void validateDate(String date, String label) {
         if (date == null || !date.matches("\\d{8}")) throw new IllegalArgumentException(label + "必须是 YYYYMMDD 格式");

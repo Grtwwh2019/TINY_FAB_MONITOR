@@ -21,25 +21,32 @@ final class OracleRepository {
     private final String taskSql;
     private final String upstreamDependencySql;
     private final String downstreamDependencySql;
-    private final String completedDatesSql;
+    private final String endCompletedDatesSql;
+    private final String allDependenciesSql;
+    private final String allLevelDescriptionsSql;
+    private final String allFabDescriptionsSql;
+    private volatile Map<String, String> levelDescriptionCache;
+    private volatile Map<String, String> fabDescriptionCache;
 
     OracleRepository(AppConfig config) throws ClassNotFoundException {
         this.config = config;
         Class.forName("oracle.jdbc.OracleDriver");
-        taskSql = "select p.prcss_dt, p.thread_id, p.lvl_no, p.fab_id, p.stat_cde, p.act_tm, " +
-            "(select ldesc.descr from " + config.levelDescTable + " ldesc where ldesc.thread_id=p.thread_id and ldesc.lvl_no=p.lvl_no) Ldes, " +
-            "(select fplan.descr from " + config.fabPlanTable + " fplan where fplan.fab_id=p.fab_id and fplan.thread_id=p.thread_id) fdesc " +
+        taskSql = "select p.prcss_dt, p.thread_id, p.lvl_no, p.fab_id, p.stat_cde, p.act_tm " +
             "from " + config.scheduleTable + " p where p.prcss_dt=to_date(?,'yyyymmdd') " +
             "order by 1,2,3,4,5";
         // FAB/依赖字段在部分 Oracle 环境中是 CHAR。JDBC setString 绑定为 VARCHAR2，
         // 直接使用“字段=?”可能因为 CHAR 尾部补空格而无法命中，导致 DAG 只显示中心节点。
         upstreamDependencySql = "select fab_id, depn_id from " + config.dependencyTable + " where trim(fab_id)=?";
         downstreamDependencySql = "select fab_id, depn_id from " + config.dependencyTable + " where trim(depn_id)=?";
-        completedDatesSql = "select business_date from (" +
-            "select to_char(p.prcss_dt,'yyyymmdd') business_date from " + config.scheduleTable + " p " +
-            "where p.prcss_dt<to_date(?,'yyyymmdd') group by p.prcss_dt " +
-            "having sum(case when upper(trim(p.stat_cde))='R' then 0 else 1 end)=0 order by p.prcss_dt desc" +
+        endCompletedDatesSql = "select business_date, act_tm from (" +
+            "select to_char(p.prcss_dt,'yyyymmdd') business_date, max(p.act_tm) act_tm from " + config.scheduleTable + " p " +
+            "where p.prcss_dt<to_date(?,'yyyymmdd') and trim(p.thread_id)=? " +
+            "and trim(cast(p.lvl_no as varchar2(100)))=? and trim(p.fab_id)=? " +
+            "and upper(trim(p.stat_cde))='R' group by p.prcss_dt order by business_date desc" +
             ") where rownum<=?";
+        allDependenciesSql = "select fab_id, depn_id from " + config.dependencyTable;
+        allLevelDescriptionsSql = "select thread_id, lvl_no, descr from " + config.levelDescTable;
+        allFabDescriptionsSql = "select thread_id, fab_id, descr from " + config.fabPlanTable;
         DriverManager.setLoginTimeout(config.connectTimeoutSeconds);
     }
 
@@ -56,12 +63,17 @@ final class OracleRepository {
     String taskSqlForTest() { return taskSql; }
     String upstreamDependencySqlForTest() { return upstreamDependencySql; }
     String downstreamDependencySqlForTest() { return downstreamDependencySql; }
-    String completedDatesSqlForTest() { return completedDatesSql; }
+    String endCompletedDatesSqlForTest() { return endCompletedDatesSql; }
+    String allDependenciesSqlForTest() { return allDependenciesSql; }
+    String allLevelDescriptionsSqlForTest() { return allLevelDescriptionsSql; }
+    String allFabDescriptionsSqlForTest() { return allFabDescriptionsSql; }
 
     List<Models.OracleTask> fetchTasks(Connection connection, String processDate) throws SQLException {
+        ensureDescriptionCaches(connection);
         List<Models.OracleTask> result = new ArrayList<Models.OracleTask>();
         PreparedStatement statement = connection.prepareStatement(taskSql);
         statement.setQueryTimeout(90);
+        statement.setFetchSize(1000);
         statement.setString(1, processDate);
         ResultSet rows = statement.executeQuery();
         try {
@@ -77,8 +89,8 @@ final class OracleRepository {
                 Object actTimeValue = rows.getObject(6);
                 task.actTimePlaceholder = DateCompatibility.isPlaceholder(actTimeValue);
                 task.actTime = parseActTime(actTimeValue);
-                task.levelDescription = text(rows.getObject(7));
-                task.fabDescription = text(rows.getObject(8));
+                task.levelDescription = description(levelDescriptionCache, task.threadId, task.levelNo);
+                task.fabDescription = description(fabDescriptionCache, task.threadId, task.fabId);
                 result.add(task);
             }
         } finally {
@@ -93,16 +105,76 @@ final class OracleRepository {
         return DependencySearch.load(rootFabId, currentDateTasks, upstreamDepth, downstreamDepth, new CachedBatchLookup(connection));
     }
 
-    List<String> fetchPreviousCompletedDates(Connection connection, String beforeDate, int maximumCount) throws SQLException {
+    List<String> fetchPreviousEndCompletedDates(Connection connection, String beforeDate, String threadId,
+                                                String levelNo, String fabId, int maximumCount) throws SQLException {
         List<String> result = new ArrayList<String>();
-        PreparedStatement statement = connection.prepareStatement(completedDatesSql);
+        PreparedStatement statement = connection.prepareStatement(endCompletedDatesSql);
         statement.setQueryTimeout(90);
+        statement.setFetchSize(Math.min(maximumCount, 100));
         statement.setString(1, beforeDate);
-        statement.setInt(2, maximumCount);
+        statement.setString(2, threadId);
+        statement.setString(3, levelNo);
+        statement.setString(4, fabId);
+        statement.setInt(5, maximumCount);
         ResultSet rows = statement.executeQuery();
-        try { while (rows.next()) { String value = text(rows.getObject(1)); if (!value.isEmpty()) result.add(value); } }
+        try {
+            while (rows.next()) {
+                String value = text(rows.getObject(1)); Object actTime = rows.getObject(2);
+                try {
+                    if (!value.isEmpty() && parseActTime(actTime) != null && !result.contains(value)) result.add(value);
+                } catch (SQLException ignored) {
+                    // 单个异常/旧格式时间不应阻止继续寻找更早的有效结束日期。
+                }
+            }
+        }
         finally { rows.close(); statement.close(); }
         return result;
+    }
+
+    List<Models.Dependency> fetchAllDependencies(Connection connection) throws SQLException {
+        List<Models.Dependency> result = new ArrayList<Models.Dependency>();
+        PreparedStatement statement = connection.prepareStatement(allDependenciesSql);
+        statement.setQueryTimeout(90);
+        statement.setFetchSize(2000);
+        ResultSet rows = statement.executeQuery();
+        try {
+            while (rows.next()) {
+                String owner = text(rows.getObject(1)), dependency = text(rows.getObject(2));
+                if (!owner.isEmpty() && !dependency.isEmpty()) result.add(new Models.Dependency(owner, dependency));
+            }
+        } finally { rows.close(); statement.close(); }
+        return result;
+    }
+
+    private void ensureDescriptionCaches(Connection connection) throws SQLException {
+        if (levelDescriptionCache != null && fabDescriptionCache != null) return;
+        synchronized (this) {
+            if (levelDescriptionCache == null) levelDescriptionCache = fetchDescriptions(connection, allLevelDescriptionsSql);
+            if (fabDescriptionCache == null) fabDescriptionCache = fetchDescriptions(connection, allFabDescriptionsSql);
+        }
+    }
+
+    private Map<String, String> fetchDescriptions(Connection connection, String sql) throws SQLException {
+        Map<String, String> result = new LinkedHashMap<String, String>();
+        PreparedStatement statement = connection.prepareStatement(sql);
+        statement.setQueryTimeout(90);
+        statement.setFetchSize(2000);
+        ResultSet rows = statement.executeQuery();
+        try {
+            while (rows.next()) {
+                String thread = text(rows.getObject(1)), id = text(rows.getObject(2)), description = text(rows.getObject(3));
+                if (!thread.isEmpty() && !id.isEmpty()) result.put(descriptionKey(thread, id), description);
+            }
+        } finally { rows.close(); statement.close(); }
+        return result;
+    }
+
+    private static String description(Map<String, String> values, String thread, String id) {
+        String value = values.get(descriptionKey(thread, id)); return value == null ? "" : value;
+    }
+
+    private static String descriptionKey(String thread, String id) {
+        return normalizeFab(thread) + "|" + normalizeFab(id);
     }
 
     List<Models.Dependency> fetchDependenciesForOwners(Connection connection, Set<String> fabIds) throws SQLException {

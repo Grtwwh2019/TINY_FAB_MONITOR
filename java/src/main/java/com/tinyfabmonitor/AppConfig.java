@@ -29,6 +29,12 @@ final class AppConfig {
     final int pollIntervalMaxMinutes;
     final int dagUpstreamLevels;
     final int dagDownstreamLevels;
+    final String analysisStartThreadId;
+    final String analysisStartLevelNo;
+    final String analysisStartFabId;
+    final String analysisEndThreadId;
+    final String analysisEndLevelNo;
+    final String analysisEndFabId;
 
     private AppConfig(Path baseDirectory, Properties p) {
         this.baseDirectory = baseDirectory;
@@ -61,6 +67,14 @@ final class AppConfig {
         }
         dagUpstreamLevels = rangedInt(p, "monitor.dag_upstream_levels", 5, 0, 15);
         dagDownstreamLevels = rangedInt(p, "monitor.dag_downstream_levels", 5, 0, 15);
+        analysisStartThreadId = trim(p.getProperty("monitor.analysis_start_thread_id"));
+        analysisStartLevelNo = trim(p.getProperty("monitor.analysis_start_level_no"));
+        analysisStartFabId = trim(p.getProperty("monitor.analysis_start_fab_id"));
+        analysisEndThreadId = trim(p.getProperty("monitor.analysis_end_thread_id"));
+        analysisEndLevelNo = trim(p.getProperty("monitor.analysis_end_level_no"));
+        analysisEndFabId = trim(p.getProperty("monitor.analysis_end_fab_id"));
+        validateOptionalTask("开始基准任务", analysisStartThreadId, analysisStartLevelNo, analysisStartFabId);
+        validateOptionalTask("结束基准任务", analysisEndThreadId, analysisEndLevelNo, analysisEndFabId);
         String storage = trim(p.getProperty("storage.directory"));
         if (storage.isEmpty()) storage = "data";
         Path configured = java.nio.file.Paths.get(storage);
@@ -107,6 +121,11 @@ final class AppConfig {
         if (value.isEmpty()) return fallback;
         try { return Integer.parseInt(value); }
         catch (NumberFormatException e) { throw new IllegalArgumentException(key + " 必须是整数"); }
+    }
+
+    private static void validateOptionalTask(String label, String threadId, String levelNo, String fabId) {
+        int filled = (threadId.isEmpty() ? 0 : 1) + (levelNo.isEmpty() ? 0 : 1) + (fabId.isEmpty() ? 0 : 1);
+        if (filled != 0 && filled != 3) throw new IllegalArgumentException(label + "必须同时配置 Thread ID、Level No 和 FAB ID，或者全部留空");
     }
 
     private static String trim(String value) { return value == null ? "" : value.trim(); }

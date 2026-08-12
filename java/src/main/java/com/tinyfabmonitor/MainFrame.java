@@ -73,12 +73,18 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
     private final JLabel dagEta = new JLabel("预计完成：请先搜索中心 FAB");
     private final JTextField retentionDays = new JTextField("14", 4);
     private final JTextField analysisDate = new JTextField(8);
-    private final JComboBox<String> analysisBaselineMode = new JComboBox<String>(new String[]{"前一个完整业务日期", "指定业务日期", "最近完整日期平均"});
+    private final JComboBox<String> analysisBaselineMode = new JComboBox<String>(new String[]{"前一个结束任务完成日期", "指定业务日期", "最近结束任务完成日期平均"});
     private final JTextField analysisBaselineDate = new JTextField(8);
     private final JTextField analysisRecentCount = new JTextField("7", 2);
     private final JTextField analysisThread = new JTextField(7);
     private final JTextField analysisLevelMin = new JTextField(3);
     private final JTextField analysisLevelMax = new JTextField(3);
+    private final JTextField analysisStartThread = new JTextField(7);
+    private final JTextField analysisStartLevel = new JTextField(4);
+    private final JTextField analysisStartFab = new JTextField(10);
+    private final JTextField analysisEndThread = new JTextField(7);
+    private final JTextField analysisEndLevel = new JTextField(4);
+    private final JTextField analysisEndFab = new JTextField(10);
     private final JButton analysisRun = new JButton("开始分析");
     private final JLabel analysisSummary = new JLabel("请选择条件并点击开始分析");
     private final JLabel analysisDetail = new JLabel(" ");
@@ -102,6 +108,12 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
         });
         dagUpstreamLevels.setText(String.valueOf(monitor.defaultDagUpstreamLevels()));
         dagDownstreamLevels.setText(String.valueOf(monitor.defaultDagDownstreamLevels()));
+        analysisStartThread.setText(monitor.defaultAnalysisStartThreadId());
+        analysisStartLevel.setText(monitor.defaultAnalysisStartLevelNo());
+        analysisStartFab.setText(monitor.defaultAnalysisStartFabId());
+        analysisEndThread.setText(monitor.defaultAnalysisEndThreadId());
+        analysisEndLevel.setText(monitor.defaultAnalysisEndLevelNo());
+        analysisEndFab.setText(monitor.defaultAnalysisEndFabId());
         setContentPane(buildContent());
         dag.setShowDagAction(this::requestDag);
         taskTable.setRowSorter(taskSorter);
@@ -186,7 +198,12 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
         analysisCriticalOnly.setOpaque(false); analysisCriticalOnly.addActionListener(e -> analysisDag.setCriticalOnly(analysisCriticalOnly.isSelected())); controls.add(analysisCriticalOnly);
         analysisRun.addActionListener(e -> startAnalysis());
         analysisBaselineMode.addActionListener(e -> updateAnalysisControls());
-        JPanel header = new JPanel(new BorderLayout(0, 6)); header.add(controls, BorderLayout.NORTH);
+        JPanel boundaries = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        boundaries.add(new JLabel("开始任务  Thread：")); boundaries.add(analysisStartThread); boundaries.add(new JLabel("Level：")); boundaries.add(analysisStartLevel);
+        boundaries.add(new JLabel("FAB：")); boundaries.add(analysisStartFab); boundaries.add(new JLabel("  →  结束任务  Thread：")); boundaries.add(analysisEndThread);
+        boundaries.add(new JLabel("Level：")); boundaries.add(analysisEndLevel); boundaries.add(new JLabel("FAB：")); boundaries.add(analysisEndFab);
+        JPanel inputRows = new JPanel(new GridLayout(2, 1, 0, 4)); inputRows.add(controls); inputRows.add(boundaries);
+        JPanel header = new JPanel(new BorderLayout(0, 6)); header.add(inputRows, BorderLayout.NORTH);
         analysisSummary.setFont(analysisSummary.getFont().deriveFont(Font.BOLD, 14f)); analysisSummary.setForeground(new Color(22, 93, 255));
         JPanel messages = new JPanel(new GridLayout(2, 1)); messages.add(analysisSummary); messages.add(analysisDetail); header.add(messages, BorderLayout.SOUTH);
         panel.add(header, BorderLayout.NORTH);
@@ -206,6 +223,8 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
             Models.AnalysisRequest request = new Models.AnalysisRequest();
             request.analysisDate = analysisDate.getText().trim(); request.threadFilter = analysisThread.getText().trim();
             request.levelMinimum = ViewLogic.parseLevelBound(analysisLevelMin.getText()); request.levelMaximum = ViewLogic.parseLevelBound(analysisLevelMax.getText());
+            request.startThreadId = analysisStartThread.getText().trim(); request.startLevelNo = analysisStartLevel.getText().trim(); request.startFabId = analysisStartFab.getText().trim();
+            request.endThreadId = analysisEndThread.getText().trim(); request.endLevelNo = analysisEndLevel.getText().trim(); request.endFabId = analysisEndFab.getText().trim();
             if (analysisBaselineMode.getSelectedIndex() == 0) request.baselineMode = Models.AnalysisBaselineMode.PREVIOUS_COMPLETE;
             else if (analysisBaselineMode.getSelectedIndex() == 1) { request.baselineMode = Models.AnalysisBaselineMode.SPECIFIED_DATE; request.specifiedBaselineDate = analysisBaselineDate.getText().trim(); }
             else { request.baselineMode = Models.AnalysisBaselineMode.RECENT_AVERAGE; request.recentDateCount = Integer.parseInt(analysisRecentCount.getText().trim()); }

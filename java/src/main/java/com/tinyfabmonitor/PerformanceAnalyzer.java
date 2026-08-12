@@ -27,11 +27,14 @@ final class PerformanceAnalyzer {
         String date;
         Map<String, TaskSnapshot> byGroup = new LinkedHashMap<String, TaskSnapshot>();
         Map<String, TaskSnapshot> byFab = new LinkedHashMap<String, TaskSnapshot>();
+        TaskSnapshot startTask;
+        TaskSnapshot endTask;
         Date start;
         Date finish;
         long durationSeconds;
         boolean complete;
         boolean estimatedStart;
+        String startBasis = "";
     }
 
     private static class Averages {
@@ -42,39 +45,63 @@ final class PerformanceAnalyzer {
 
     private PerformanceAnalyzer() {}
 
+    static String baselineIssue(Models.AnalysisRequest request, String date, List<Models.OracleTask> tasks,
+                                List<Models.RunRecord> runs) {
+        DaySnapshot day = snapshot(request, date, tasks, runs, Collections.<Models.Dependency>emptyList());
+        return baselineUnusableReason(day);
+    }
+
     static Models.AnalysisResult analyze(Models.AnalysisRequest request,
                                          Map<String, List<Models.OracleTask>> tasksByDate,
                                          List<Models.RunRecord> runs,
-                                         List<Models.Dependency> dependencies,
-                                         List<String> baselineDates,
+                                         List<Models.Dependency> allDependencies,
+                                         List<String> baselineCandidates,
                                          Date now) {
         Models.AnalysisResult result = new Models.AnalysisResult();
         result.analysisDate = request.analysisDate;
-        result.baselineDates.addAll(baselineDates);
-        result.baselineLabel = baselineDates.size() == 1 ? baselineDates.get(0) : "最近 " + baselineDates.size() + " 个完整业务日期平均";
-        result.dependencies.addAll(dependencies);
+        result.startTaskLabel = taskLabel(request.startThreadId, request.startLevelNo, request.startFabId);
+        result.endTaskLabel = taskLabel(request.endThreadId, request.endLevelNo, request.endFabId);
 
-        DaySnapshot target = snapshot(request.analysisDate, tasksByDate.get(request.analysisDate), runs, dependencies);
-        if (target.byGroup.isEmpty()) throw new IllegalArgumentException("分析日期没有符合筛选条件的任务");
+        List<Models.OracleTask> targetTasks = tasksByDate.get(request.analysisDate);
+        if (targetTasks == null || targetTasks.isEmpty()) throw new IllegalArgumentException("分析日期没有符合筛选条件的任务");
+        List<Models.Dependency> dependencies = dependenciesForTasks(allDependencies, targetTasks);
+        result.dependencies.addAll(dependencies);
+        DaySnapshot target = snapshot(request, request.analysisDate, targetTasks, runs, dependencies);
+        requireBoundaryTasks(target, true);
+
+        int requiredBaselines = request.baselineMode == Models.AnalysisBaselineMode.RECENT_AVERAGE ? request.recentDateCount : 1;
         List<DaySnapshot> baselines = new ArrayList<DaySnapshot>();
-        for (String date : baselineDates) {
-            DaySnapshot day = snapshot(date, tasksByDate.get(date), runs, dependencies);
-            if (!day.byGroup.isEmpty() && day.complete) baselines.add(day);
+        List<String> rejected = new ArrayList<String>();
+        for (String date : baselineCandidates) {
+            DaySnapshot day = snapshot(request, date, tasksByDate.get(date), runs, dependencies);
+            String unusable = baselineUnusableReason(day);
+            if (unusable == null) {
+                baselines.add(day);
+                result.baselineDates.add(date);
+                if (baselines.size() >= requiredBaselines) break;
+            } else if (rejected.size() < 3) rejected.add(date + "（" + unusable + "）");
         }
-        if (baselines.isEmpty()) throw new IllegalArgumentException("没有可用的完整基准日期");
+        if (baselines.isEmpty()) {
+            String detail = rejected.isEmpty() ? "没有读到候选日期任务" : "候选：" + join(rejected, "；");
+            throw new IllegalArgumentException("没有可用的基准日期；" + detail);
+        }
+        result.baselineLabel = result.baselineDates.size() == 1 ? result.baselineDates.get(0) :
+            "最近 " + result.baselineDates.size() + " 个结束任务已完成日期平均";
 
         result.targetComplete = target.complete;
         result.targetEstimatedStart = target.estimatedStart;
-        result.targetStart = target.start;
-        result.targetFinish = target.finish;
-        result.targetDurationSeconds = target.complete ? target.durationSeconds : target.start == null ? 0L : Math.max(0L, (now.getTime() - target.start.getTime()) / 1000L);
+        result.targetStart = copy(target.start);
+        result.targetFinish = copy(target.finish);
+        result.startBasis = target.startBasis;
+        result.targetDurationSeconds = target.complete ? target.durationSeconds : target.start == null ? 0L :
+            Math.max(0L, (now.getTime() - target.start.getTime()) / 1000L);
         result.baselineDurationSeconds = averageDayDuration(baselines);
 
-        Set<String> critical = criticalPath(target, dependencies);
+        Set<String> critical = criticalPath(target, dependencies, request.startFabId, request.endFabId);
         result.criticalPath.addAll(critical);
         Map<String, Models.AnalysisTaskMetric> metricsByFab = new LinkedHashMap<String, Models.AnalysisTaskMetric>();
         for (TaskSnapshot task : target.byGroup.values()) {
-            Models.AnalysisTaskMetric metric = metric(task, baselineAverage(task.task.groupId(), baselines));
+            Models.AnalysisTaskMetric metric = metric(task, baselineAverage(task.task, baselines));
             metric.criticalPath = critical.contains(normalize(task.task.fabId));
             classify(metric);
             metricsByFab.put(normalize(metric.fabId), metric);
@@ -91,7 +118,7 @@ final class PerformanceAnalyzer {
             }
         });
 
-        result.predictedFinish = target.complete ? target.finish : predictFinish(target, dependencies, runs, now);
+        result.predictedFinish = target.complete ? target.finish : predictFinish(target, dependencies, runs, request.endFabId, now);
         long comparedDuration = result.predictedFinish != null && target.start != null
             ? Math.max(0L, (result.predictedFinish.getTime() - target.start.getTime()) / 1000L) : result.targetDurationSeconds;
         result.overallDeltaSeconds = comparedDuration - result.baselineDurationSeconds;
@@ -104,33 +131,37 @@ final class PerformanceAnalyzer {
         return result;
     }
 
-    private static DaySnapshot snapshot(String date, List<Models.OracleTask> tasks, List<Models.RunRecord> runs,
-                                        List<Models.Dependency> dependencies) {
+    private static DaySnapshot snapshot(Models.AnalysisRequest request, String date, List<Models.OracleTask> tasks,
+                                        List<Models.RunRecord> runs, List<Models.Dependency> dependencies) {
         DaySnapshot day = new DaySnapshot(); day.date = date;
         if (tasks == null) return day;
         Map<String, Models.RunRecord> runByGroup = runsForDate(runs, date);
         for (Models.OracleTask task : latest(tasks)) {
             TaskSnapshot value = new TaskSnapshot(); value.task = task;
-            Models.RunRecord run = runByGroup.get(task.groupId());
+            Models.RunRecord run = runByGroup.get(groupKey(task));
+            boolean completedInDatabase = "R".equalsIgnoreCase(task.status) && task.actTime != null && !task.actTimePlaceholder;
             if (run != null) {
-                value.startedAt = copy(run.startedAt); value.completedAt = copy(run.completedAt);
-                if (run.startedAt != null && run.completedAt != null) value.executionSeconds = run.durationSeconds;
+                boolean matchingCompletedRun = completedInDatabase && run.completedAt != null &&
+                    Math.abs(run.completedAt.getTime() - task.actTime.getTime()) < 1000L;
+                if (!completedInDatabase || matchingCompletedRun) value.startedAt = copy(run.startedAt);
+                if (matchingCompletedRun && run.startedAt != null) {
+                    value.executionSeconds = Math.max(0L, (task.actTime.getTime() - run.startedAt.getTime()) / 1000L);
+                }
                 value.anomalyCount = run.anomalyTimes == null ? 0 : run.anomalyTimes.size();
             }
-            if (value.completedAt == null && "R".equalsIgnoreCase(task.status) && task.actTime != null && !task.actTimePlaceholder) value.completedAt = copy(task.actTime);
-            day.byGroup.put(task.groupId(), value);
+            if (completedInDatabase) value.completedAt = copy(task.actTime);
+            day.byGroup.put(groupKey(task), value);
             TaskSnapshot previous = day.byFab.get(normalize(task.fabId));
             if (previous == null || time(value.completedAt) > time(previous.completedAt)) day.byFab.put(normalize(task.fabId), value);
         }
-        day.complete = !day.byGroup.isEmpty();
-        for (TaskSnapshot task : day.byGroup.values()) {
-            Date effectiveStart = task.startedAt != null ? task.startedAt : task.completedAt;
-            if (task.startedAt == null && task.completedAt != null) day.estimatedStart = true;
-            if (effectiveStart != null && (day.start == null || effectiveStart.before(day.start))) day.start = effectiveStart;
-            if (task.completedAt != null && (day.finish == null || task.completedAt.after(day.finish))) day.finish = task.completedAt;
-            if (!"R".equalsIgnoreCase(task.task.status) || task.completedAt == null) day.complete = false;
-        }
+
+        day.startTask = findTask(day, request.startThreadId, request.startLevelNo, request.startFabId);
+        day.endTask = findTask(day, request.endThreadId, request.endLevelNo, request.endFabId);
+        if (day.startTask != null) resolveBoundaryStart(day, day.startTask, runs);
+        if (day.endTask != null && "R".equalsIgnoreCase(day.endTask.task.status)) day.finish = copy(day.endTask.completedAt);
+        day.complete = day.finish != null;
         if (day.start != null && day.finish != null) day.durationSeconds = Math.max(0L, (day.finish.getTime() - day.start.getTime()) / 1000L);
+
         for (TaskSnapshot task : day.byGroup.values()) {
             if (task.completedAt != null && day.start != null) task.completionOffsetSeconds = Math.max(0L, (task.completedAt.getTime() - day.start.getTime()) / 1000L);
             if (task.startedAt != null) {
@@ -139,6 +170,37 @@ final class PerformanceAnalyzer {
             }
         }
         return day;
+    }
+
+    private static void resolveBoundaryStart(DaySnapshot day, TaskSnapshot startTask, List<Models.RunRecord> runs) {
+        if (startTask.startedAt != null) {
+            day.start = copy(startTask.startedAt); day.startBasis = "开始任务 I 时间（精确）"; return;
+        }
+        if (startTask.completedAt == null) return;
+        Long average = historicalAverage(runs, startTask.task);
+        if (average != null) {
+            day.start = new Date(startTask.completedAt.getTime() - average * 1000L);
+            day.startBasis = "开始任务 R 时间减历史平均（估算）";
+        } else {
+            day.start = copy(startTask.completedAt);
+            day.startBasis = "开始任务仅有 R 时间（低精度估算）";
+        }
+        day.estimatedStart = true;
+    }
+
+    private static void requireBoundaryTasks(DaySnapshot day, boolean target) {
+        if (day.startTask == null) throw new IllegalArgumentException((target ? "分析日期" : day.date) + "找不到开始基准任务");
+        if (day.endTask == null) throw new IllegalArgumentException((target ? "分析日期" : day.date) + "找不到结束基准任务");
+        if (day.start == null) throw new IllegalArgumentException((target ? "分析日期" : day.date) + "的开始基准任务没有有效 I 或 R 时间");
+    }
+
+    private static String baselineUnusableReason(DaySnapshot day) {
+        if (day.startTask == null) return "找不到开始任务";
+        if (day.endTask == null) return "找不到结束任务";
+        if (day.start == null) return "开始任务没有有效 I/R 时间";
+        if (!"R".equalsIgnoreCase(day.endTask.task.status)) return "结束任务状态不是 R";
+        if (day.finish == null) return day.endTask.task.actTimePlaceholder ? "结束任务 R 时间是占位值" : "结束任务没有有效 R 时间";
+        return null;
     }
 
     private static Models.AnalysisTaskMetric metric(TaskSnapshot task, Averages baseline) {
@@ -190,28 +252,28 @@ final class PerformanceAnalyzer {
         }
     }
 
-    private static Set<String> criticalPath(DaySnapshot day, List<Models.Dependency> dependencies) {
+    private static Set<String> criticalPath(DaySnapshot day, List<Models.Dependency> dependencies, String startFab, String endFab) {
         LinkedHashSet<String> reversed = new LinkedHashSet<String>();
-        TaskSnapshot end = null;
-        for (TaskSnapshot task : day.byGroup.values()) if (task.completedAt != null && (end == null || task.completedAt.after(end.completedAt))) end = task;
+        TaskSnapshot current = day.byFab.get(normalize(endFab));
         Map<String, List<String>> upstream = upstream(dependencies);
         Set<String> visiting = new LinkedHashSet<String>();
-        while (end != null && visiting.add(normalize(end.task.fabId))) {
-            String id = normalize(end.task.fabId); reversed.add(id);
+        while (current != null && visiting.add(normalize(current.task.fabId))) {
+            String id = normalize(current.task.fabId); reversed.add(id);
+            if (id.equals(normalize(startFab))) break;
             TaskSnapshot latest = null;
             List<String> values = upstream.get(id);
             if (values != null) for (String dependency : values) {
                 TaskSnapshot candidate = day.byFab.get(dependency);
                 if (candidate != null && candidate.completedAt != null && (latest == null || candidate.completedAt.after(latest.completedAt))) latest = candidate;
             }
-            end = latest;
+            current = latest;
         }
         List<String> order = new ArrayList<String>(reversed); Collections.reverse(order);
         return new LinkedHashSet<String>(order);
     }
 
     private static Date predictFinish(DaySnapshot day, List<Models.Dependency> dependencies,
-                                      List<Models.RunRecord> runs, Date now) {
+                                      List<Models.RunRecord> runs, String endFabId, Date now) {
         Map<String, Models.GroupStat> stats = MonitorService.buildGroupStats(runs);
         List<Models.TaskView> views = new ArrayList<Models.TaskView>();
         for (TaskSnapshot snapshot : day.byGroup.values()) {
@@ -223,19 +285,14 @@ final class PerformanceAnalyzer {
             if (stat != null) { view.averageDurationSeconds = stat.average; view.completedRunCount = stat.count; }
             views.add(view);
         }
-        Date latest = day.finish;
-        for (Models.TaskView view : views) {
-            if ("R".equalsIgnoreCase(view.status)) continue;
-            Models.DagEta eta = EtaCalculator.calculate(view.fabId, views, dependencies, now);
-            if (eta.available && (latest == null || eta.estimatedCompletion.after(latest))) latest = eta.estimatedCompletion;
-        }
-        return latest;
+        Models.DagEta eta = EtaCalculator.calculate(endFabId, views, dependencies, now);
+        return eta.available ? eta.estimatedCompletion : null;
     }
 
-    private static Averages baselineAverage(String groupId, List<DaySnapshot> days) {
+    private static Averages baselineAverage(Models.TaskKey taskKey, List<DaySnapshot> days) {
         long execution = 0, wait = 0, completion = 0; int ec = 0, wc = 0, cc = 0;
         for (DaySnapshot day : days) {
-            TaskSnapshot task = day.byGroup.get(groupId); if (task == null) continue;
+            TaskSnapshot task = day.byGroup.get(groupKey(taskKey)); if (task == null) continue;
             if (task.executionSeconds != null) { execution += task.executionSeconds; ec++; }
             if (task.waitSeconds != null) { wait += task.waitSeconds; wc++; }
             if (task.completedAt != null) { completion += task.completionOffsetSeconds; cc++; }
@@ -245,26 +302,56 @@ final class PerformanceAnalyzer {
         value.completionOffset = cc == 0 ? null : completion / cc; return value;
     }
 
-    private static long averageDayDuration(List<DaySnapshot> days) { long total = 0; for (DaySnapshot day : days) total += day.durationSeconds; return total / days.size(); }
+    private static long averageDayDuration(List<DaySnapshot> days) {
+        long total = 0; for (DaySnapshot day : days) total += day.durationSeconds; return total / days.size();
+    }
 
     private static void buildSummary(Models.AnalysisResult result, DaySnapshot target) {
         Models.AnalysisTaskMetric bottleneck = result.rows.isEmpty() ? null : result.rows.get(0);
         String delta = (result.overallDeltaSeconds >= 0 ? "慢 " : "快 ") + UiFormat.duration(Math.abs(result.overallDeltaSeconds));
         if (target.complete) result.summary = result.analysisDate + " 比 " + result.baselineLabel + " 整体" + delta;
-        else if (result.predictedFinish != null) result.summary = result.analysisDate + " 尚未完成，预计完成 " + UiFormat.dateTime(result.predictedFinish) + "，预计整体" + delta;
-        else result.summary = result.analysisDate + " 尚未完成，当前已运行 " + UiFormat.duration(result.targetDurationSeconds) + "，暂时无法预测最终完成时间";
-        if (bottleneck != null) result.detail = "主要候选慢点：" + bottleneck.fabId + "；" + bottleneck.reason +
-            "。精确分析 " + result.preciseCount + " 个，完成时间分析 " + result.completionOnlyCount + " 个，数据不足 " + result.insufficientCount + " 个。";
+        else if (result.predictedFinish != null) result.summary = result.analysisDate + " 的结束任务尚未完成，预计 " + UiFormat.dateTime(result.predictedFinish) + " 完成，预计整体" + delta;
+        else result.summary = result.analysisDate + " 的结束任务尚未完成，当前已运行 " + UiFormat.duration(result.targetDurationSeconds) + "，暂时无法预测完成时间";
+        String basis = result.startBasis.isEmpty() ? "开始时间不可用" : result.startBasis;
+        if (bottleneck != null) result.detail = "区间：" + result.startTaskLabel + " → " + result.endTaskLabel + "；开始依据：" + basis +
+            "；主要候选慢点：" + bottleneck.fabId + "（" + bottleneck.reason + "）。精确 " + result.preciseCount +
+            "，仅完成时间 " + result.completionOnlyCount + "，数据不足 " + result.insufficientCount + "。";
+    }
+
+    private static List<Models.Dependency> dependenciesForTasks(List<Models.Dependency> dependencies, List<Models.OracleTask> tasks) {
+        Set<String> allowed = new LinkedHashSet<String>();
+        for (Models.OracleTask task : tasks) allowed.add(normalize(task.fabId));
+        Map<String, Models.Dependency> unique = new LinkedHashMap<String, Models.Dependency>();
+        for (Models.Dependency edge : dependencies) {
+            String owner = normalize(edge.fabId), dependency = normalize(edge.dependencyId);
+            if (allowed.contains(owner) && allowed.contains(dependency)) unique.put(dependency + "->" + owner, edge);
+        }
+        return new ArrayList<Models.Dependency>(unique.values());
     }
 
     private static Map<String, Models.RunRecord> runsForDate(List<Models.RunRecord> runs, String date) {
         Map<String, Models.RunRecord> result = new HashMap<String, Models.RunRecord>();
         for (Models.RunRecord run : runs) {
             if (run == null || run.task == null || !date.equals(run.task.processDate)) continue;
-            Models.RunRecord previous = result.get(run.task.groupId());
-            if (previous == null || eventTime(run) > eventTime(previous)) result.put(run.task.groupId(), run);
+            String key = groupKey(run.task); Models.RunRecord previous = result.get(key);
+            if (previous == null || eventTime(run) > eventTime(previous)) result.put(key, run);
         }
         return result;
+    }
+
+    private static Long historicalAverage(List<Models.RunRecord> runs, Models.TaskKey task) {
+        long total = 0L; int count = 0;
+        for (Models.RunRecord run : runs) {
+            if (run == null || run.task == null || run.startedAt == null || run.completedAt == null) continue;
+            if (!groupKey(run.task).equals(groupKey(task))) continue;
+            if (run.task.processDate != null && task.processDate != null && run.task.processDate.compareTo(task.processDate) >= 0) continue;
+            total += run.durationSeconds; count++;
+        }
+        return count == 0 ? null : total / count;
+    }
+
+    private static TaskSnapshot findTask(DaySnapshot day, String thread, String level, String fab) {
+        return day.byGroup.get(groupKey(thread, level, fab));
     }
 
     private static List<Models.OracleTask> latest(List<Models.OracleTask> tasks) { return MonitorService.selectLatestTasks(tasks); }
@@ -293,4 +380,8 @@ final class PerformanceAnalyzer {
     private static long time(Date value) { return value == null ? Long.MIN_VALUE : value.getTime(); }
     private static Date copy(Date value) { return value == null ? null : new Date(value.getTime()); }
     private static String normalize(String value) { return value == null ? "" : value.trim().toUpperCase(Locale.ROOT); }
+    private static String groupKey(Models.TaskKey value) { return groupKey(value.threadId, value.levelNo, value.fabId); }
+    private static String groupKey(String thread, String level, String fab) { return normalize(thread) + "|" + normalize(level) + "|" + normalize(fab); }
+    private static String taskLabel(String thread, String level, String fab) { return thread + "/" + level + "/" + fab; }
+    private static String join(List<String> values, String delimiter) { StringBuilder result = new StringBuilder(); for (String value : values) { if (result.length() > 0) result.append(delimiter); result.append(value); } return result.toString(); }
 }

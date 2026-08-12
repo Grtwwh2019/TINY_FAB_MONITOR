@@ -102,6 +102,15 @@ final class Models {
         String threadFilter = "";
         Integer levelMinimum;
         Integer levelMaximum;
+        String startThreadId = "";
+        String startLevelNo = "";
+        String startFabId = "";
+        String endThreadId = "";
+        String endLevelNo = "";
+        String endFabId = "";
+
+        String startGroupId() { return startThreadId + "|" + startLevelNo + "|" + startFabId; }
+        String endGroupId() { return endThreadId + "|" + endLevelNo + "|" + endFabId; }
     }
 
     static class AnalysisTaskMetric {
@@ -140,6 +149,9 @@ final class Models {
         long baselineDurationSeconds;
         long overallDeltaSeconds;
         Date predictedFinish;
+        String startBasis = "";
+        String startTaskLabel = "";
+        String endTaskLabel = "";
         String summary = "";
         String detail = "";
         List<AnalysisTaskMetric> rows = new ArrayList<AnalysisTaskMetric>();

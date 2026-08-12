@@ -17,6 +17,12 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class DependencySearchTest {
+    @Test public void inMemoryLookupReusesOneFullDependencySetForBothDirections() throws Exception {
+        List<Models.Dependency> all = Arrays.asList(new Models.Dependency("B", "A"), new Models.Dependency("C", "B"));
+        DependencySearch.BatchLookup lookup = DependencySearch.inMemory(all);
+        assertEquals(1, lookup.upstream(new LinkedHashSet<String>(Arrays.asList("B"))).size());
+        assertEquals(1, lookup.downstream(new LinkedHashSet<String>(Arrays.asList("B"))).size());
+    }
     @Test public void etaIgnoresDisplayDepthAndBatchesOnlyExpandableNodes() throws Exception {
         FakeBatchLookup lookup = new FakeBatchLookup();
         lookup.edge("ROOT", "WAITING"); lookup.edge("ROOT", "PLACEHOLDER_R");

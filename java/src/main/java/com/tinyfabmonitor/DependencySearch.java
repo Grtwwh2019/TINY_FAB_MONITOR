@@ -18,6 +18,39 @@ final class DependencySearch {
 
     private DependencySearch() {}
 
+    static BatchLookup inMemory(final List<Models.Dependency> dependencies) {
+        final Map<String, List<Models.Dependency>> byOwner = new LinkedHashMap<String, List<Models.Dependency>>();
+        final Map<String, List<Models.Dependency>> byDependency = new LinkedHashMap<String, List<Models.Dependency>>();
+        for (Models.Dependency edge : dependencies) {
+            add(byOwner, normalize(edge.fabId), edge);
+            add(byDependency, normalize(edge.dependencyId), edge);
+        }
+        return new BatchLookup() {
+            public List<Models.Dependency> upstream(Set<String> fabIds) {
+                return collect(byOwner, fabIds);
+            }
+            public List<Models.Dependency> downstream(Set<String> dependencyIds) {
+                return collect(byDependency, dependencyIds);
+            }
+        };
+    }
+
+    private static void add(Map<String, List<Models.Dependency>> index, String key, Models.Dependency edge) {
+        List<Models.Dependency> bucket = index.get(key);
+        if (bucket == null) { bucket = new ArrayList<Models.Dependency>(); index.put(key, bucket); }
+        bucket.add(edge);
+    }
+
+    private static List<Models.Dependency> collect(Map<String, List<Models.Dependency>> index, Set<String> ids) {
+        Map<String, Models.Dependency> unique = new LinkedHashMap<String, Models.Dependency>();
+        for (String id : ids) {
+            List<Models.Dependency> values = index.get(normalize(id));
+            if (values == null) continue;
+            for (Models.Dependency edge : values) unique.put(normalize(edge.dependencyId) + "->" + normalize(edge.fabId), edge);
+        }
+        return new ArrayList<Models.Dependency>(unique.values());
+    }
+
     static Models.DependencyAnalysis load(String rootFabId, List<Models.OracleTask> tasks, int upstreamDepth,
                                           int downstreamDepth, BatchLookup lookup) throws SQLException {
         Map<String, Models.OracleTask> tasksByFab = latestTasksByFab(tasks);

@@ -8,10 +8,10 @@ SHA-256：
 
 ```text
 TinyFabMonitor.jar
-eb600c20ec1d432c242a365e19192f3e4502ab74f5201e4a0b04017f92e1f21f
+bd1c3dbaf1097667cb4a0717d418cce9b25b0ecaad5c3a694055c20119d9f982
 
 TINY_FAB_MONITOR-Java8-Windows-x64.zip
-bd9eacc56e289a7af045169b57302da018c2bfcb1055b9f513b1782a6cc3472d
+317bbafee77e4199adeb9f0ca788ab94f90ded34fc872d3b9c977bdaf4805130
 ```
 
 下载 JAR 后，将 `java/config.example.properties` 复制为同目录的 `config.properties`，填写实际连接信息和表名，然后运行：
