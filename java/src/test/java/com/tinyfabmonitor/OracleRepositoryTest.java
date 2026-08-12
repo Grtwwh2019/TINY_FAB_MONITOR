@@ -53,9 +53,25 @@ public class OracleRepositoryTest {
         AppConfig appConfig = AppConfig.load(configFile, directory);
         assertEquals(5, appConfig.dagUpstreamLevels);
         assertEquals(5, appConfig.dagDownstreamLevels);
+        assertEquals(5, appConfig.pollIntervalMinMinutes);
+        assertEquals(5, appConfig.pollIntervalMaxMinutes);
         String sql = new OracleRepository(appConfig).taskSqlForTest().toLowerCase(Locale.ROOT);
         org.junit.Assert.assertTrue(sql.contains("p.prcss_dt=to_date(?,'yyyymmdd')"));
         org.junit.Assert.assertFalse(sql.contains("lvl_no between"));
+    }
+
+    @Test public void completedDateQueryUsesOneGroupedReadAndRowLimit() throws Exception {
+        Path directory = Files.createTempDirectory("tiny-fab-analysis-config");
+        Path configFile = directory.resolve("config.properties");
+        String config = "oracle.host=db.example\n" + "oracle.service_name=ORCL\n" + "oracle.username=user\n" + "oracle.password=password\n" +
+            "tables.schedule=TEST_SCHEDULE_TABLE\n" + "tables.level_desc=TEST_LEVEL_DESCRIPTION_TABLE\n" +
+            "tables.fab_plan=TEST_FAB_PLAN_TABLE\n" + "tables.fab_dependency=TEST_FAB_DEPENDENCY_TABLE\n" +
+            "monitor.process_date=20251231\n" + "monitor.poll_interval_min_minutes=4\n" + "monitor.poll_interval_max_minutes=6\n";
+        Files.write(configFile, config.getBytes(StandardCharsets.UTF_8));
+        AppConfig appConfig = AppConfig.load(configFile, directory);
+        assertEquals(4, appConfig.pollIntervalMinMinutes); assertEquals(6, appConfig.pollIntervalMaxMinutes);
+        String sql = new OracleRepository(appConfig).completedDatesSqlForTest().toLowerCase(Locale.ROOT);
+        assertTrue(sql.contains("group by p.prcss_dt")); assertTrue(sql.contains("having sum(case")); assertTrue(sql.contains("rownum<=?"));
     }
 
     @Test public void dependencyQueriesTrimOracleCharColumnsBeforeMatching() throws Exception {

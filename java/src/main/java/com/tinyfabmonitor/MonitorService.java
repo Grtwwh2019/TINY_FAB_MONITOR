@@ -15,8 +15,12 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -29,7 +33,9 @@ final class MonitorService implements AutoCloseable {
     private final StateStore store;
     private final Logger logger;
     private final ScheduledExecutorService scheduler;
+    private final ExecutorService analysisExecutor;
     private final AtomicBoolean polling = new AtomicBoolean(false);
+    private final Semaphore databaseReadPermit = new Semaphore(1, true);
     private final Object lock = new Object();
     private final List<Listener> listeners = new ArrayList<Listener>();
 
@@ -45,6 +51,9 @@ final class MonitorService implements AutoCloseable {
     private Date lastPollAt;
     private Date nextPollAt;
     private String lastError = "";
+    private ScheduledFuture<?> pollFuture;
+    private boolean closed;
+    private Models.AnalysisState analysisState = new Models.AnalysisState();
 
     MonitorService(AppConfig config, OracleRepository repository, StateStore store, Logger logger) {
         this.config = config;
@@ -59,15 +68,35 @@ final class MonitorService implements AutoCloseable {
             thread.setDaemon(true);
             return thread;
         });
+        this.analysisExecutor = Executors.newSingleThreadExecutor(r -> {
+            Thread thread = new Thread(r, "fab-performance-analysis");
+            thread.setDaemon(true);
+            return thread;
+        });
     }
 
     void start() {
-        scheduler.scheduleWithFixedDelay(this::pollSafely, 0, config.pollIntervalMinutes, TimeUnit.MINUTES);
+        schedulePoll(0);
     }
 
     void addListener(Listener listener) { synchronized (listeners) { listeners.add(listener); } }
 
-    void refreshNow() { scheduler.execute(this::pollSafely); }
+    void refreshNow() { schedulePoll(0); }
+
+    private void schedulePoll(long delayMinutes) {
+        synchronized (lock) {
+            if (closed) return;
+            if (pollFuture != null && !pollFuture.isDone()) pollFuture.cancel(false);
+            nextPollAt = new Date(System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(delayMinutes));
+            pollFuture = scheduler.schedule(this::pollSafely, delayMinutes, TimeUnit.MINUTES);
+        }
+        fireChanged();
+    }
+
+    static int randomPollInterval(int minimum, int maximum) {
+        if (minimum > maximum) throw new IllegalArgumentException("最小刷新间隔不能大于最大刷新间隔");
+        return minimum == maximum ? minimum : ThreadLocalRandom.current().nextInt(minimum, maximum + 1);
+    }
 
     void setProcessDate(String date) throws Exception {
         SimpleDateFormat format = new SimpleDateFormat("yyyyMMdd", Locale.ROOT);
@@ -98,11 +127,14 @@ final class MonitorService implements AutoCloseable {
         logger.info("开始读取业务日期 " + date);
         try {
             List<Models.OracleTask> fetchedTasks;
-            Connection connection = repository.open();
+            databaseReadPermit.acquireUninterruptibly();
             try {
-                fetchedTasks = selectLatestTasks(repository.fetchTasks(connection, date));
-                applyTaskStates(fetchedTasks);
-            } finally { connection.close(); }
+                Connection connection = repository.open();
+                try {
+                    fetchedTasks = selectLatestTasks(repository.fetchTasks(connection, date));
+                    applyTaskStates(fetchedTasks);
+                } finally { connection.close(); }
+            } finally { databaseReadPermit.release(); }
 
             Date now = new Date();
             synchronized (lock) {
@@ -118,7 +150,6 @@ final class MonitorService implements AutoCloseable {
                     }
                     connected = true;
                     lastPollAt = now;
-                    nextPollAt = new Date(now.getTime() + TimeUnit.MINUTES.toMillis(config.pollIntervalMinutes));
                     lastError = "";
                 }
             }
@@ -129,12 +160,12 @@ final class MonitorService implements AutoCloseable {
             synchronized (lock) {
                 connected = false;
                 lastPollAt = now;
-                nextPollAt = new Date(now.getTime() + TimeUnit.MINUTES.toMillis(config.pollIntervalMinutes));
                 lastError = rootMessage(e);
             }
         } finally {
             polling.set(false);
             fireChanged();
+            schedulePoll(randomPollInterval(config.pollIntervalMinMinutes, config.pollIntervalMaxMinutes));
         }
     }
 
@@ -175,9 +206,12 @@ final class MonitorService implements AutoCloseable {
             try {
                 logger.info("读取 FAB " + root + " 的依赖（上游 " + upstreamLevels + " 层，下游 " + downstreamLevels + " 层）");
                 Models.DependencyAnalysis fetched;
-                Connection connection = repository.open();
-                try { fetched = repository.fetchDependencyAnalysis(connection, root, currentTasks, upstreamLevels, downstreamLevels); }
-                finally { connection.close(); }
+                databaseReadPermit.acquireUninterruptibly();
+                try {
+                    Connection connection = repository.open();
+                    try { fetched = repository.fetchDependencyAnalysis(connection, root, currentTasks, upstreamLevels, downstreamLevels); }
+                    finally { connection.close(); }
+                } finally { databaseReadPermit.release(); }
                 synchronized (lock) {
                     if (requestId == dagRequestId && date.equals(processDate) && root.equals(dagRootFabId)) {
                         dependencies = fetched.displayDependencies;
@@ -268,6 +302,7 @@ final class MonitorService implements AutoCloseable {
             dashboard.dagLoading = dagLoading;
             dashboard.dagError = dagError;
             dashboard.dagRequestId = dagRequestId;
+            dashboard.analysis = analysisState;
         }
         Models.PersistedState state = store.snapshot();
         Map<String, Models.GroupStat> stats = buildGroupStats(state.runs);
@@ -340,6 +375,98 @@ final class MonitorService implements AutoCloseable {
         StateStore.CleanupPreview result = store.cleanup(retentionDays);
         fireChanged();
         return result;
+    }
+
+    void runPerformanceAnalysis(final Models.AnalysisRequest request) {
+        validateAnalysisRequest(request);
+        final long requestId;
+        synchronized (lock) {
+            if (analysisState.loading) throw new IllegalStateException("已有耗时分析正在运行，请等待完成");
+            Models.AnalysisState next = new Models.AnalysisState(); next.loading = true; next.requestId = analysisState.requestId + 1;
+            analysisState = next; requestId = next.requestId;
+        }
+        fireChanged();
+        analysisExecutor.execute(() -> {
+            try {
+                logger.info("开始耗时分析：" + request.analysisDate + "，模式 " + request.baselineMode);
+                Map<String, List<Models.OracleTask>> tasksByDate = new LinkedHashMap<String, List<Models.OracleTask>>();
+                List<String> baselineDates;
+                List<Models.Dependency> analysisDependencies;
+                databaseReadPermit.acquireUninterruptibly();
+                try {
+                    Connection connection = repository.open();
+                    try {
+                        List<Models.OracleTask> target = filteredTasks(tasksForAnalysisDate(connection, request.analysisDate), request);
+                        tasksByDate.put(request.analysisDate, target);
+                        if (request.baselineMode == Models.AnalysisBaselineMode.SPECIFIED_DATE) {
+                            baselineDates = Collections.singletonList(request.specifiedBaselineDate);
+                        } else {
+                            int count = request.baselineMode == Models.AnalysisBaselineMode.PREVIOUS_COMPLETE ? 1 : request.recentDateCount;
+                            baselineDates = repository.fetchPreviousCompletedDates(connection, request.analysisDate, count);
+                        }
+                        if (baselineDates.isEmpty()) throw new IllegalArgumentException("找不到早于分析日期的完整业务日期");
+                        Set<String> owners = new java.util.LinkedHashSet<String>();
+                        for (Models.OracleTask task : target) owners.add(task.fabId);
+                        for (String date : baselineDates) {
+                            List<Models.OracleTask> baseline = filteredTasks(tasksForAnalysisDate(connection, date), request);
+                            tasksByDate.put(date, baseline);
+                            for (Models.OracleTask task : baseline) owners.add(task.fabId);
+                        }
+                        analysisDependencies = repository.fetchDependenciesForOwners(connection, owners);
+                    } finally { connection.close(); }
+                } finally { databaseReadPermit.release(); }
+                Models.AnalysisResult result = PerformanceAnalyzer.analyze(request, tasksByDate, store.snapshot().runs,
+                    analysisDependencies, baselineDates, new Date());
+                synchronized (lock) {
+                    if (analysisState.requestId == requestId) {
+                        analysisState.loading = false; analysisState.error = ""; analysisState.result = result;
+                    }
+                }
+                logger.info("耗时分析完成：" + result.summary);
+            } catch (Exception e) {
+                logger.log(Level.WARNING, "耗时分析失败", e);
+                synchronized (lock) {
+                    if (analysisState.requestId == requestId) { analysisState.loading = false; analysisState.error = rootMessage(e); }
+                }
+            } finally { fireChanged(); }
+        });
+    }
+
+    private List<Models.OracleTask> tasksForAnalysisDate(Connection connection, String date) throws Exception {
+        synchronized (lock) {
+            if (date.equals(processDate) && !tasks.isEmpty()) return new ArrayList<Models.OracleTask>(tasks);
+        }
+        return selectLatestTasks(repository.fetchTasks(connection, date));
+    }
+
+    private static List<Models.OracleTask> filteredTasks(List<Models.OracleTask> values, Models.AnalysisRequest request) {
+        List<Models.OracleTask> result = new ArrayList<Models.OracleTask>();
+        String thread = request.threadFilter == null ? "" : request.threadFilter.trim().toUpperCase(Locale.ROOT);
+        for (Models.OracleTask task : values) {
+            if (!thread.isEmpty() && (task.threadId == null || !task.threadId.toUpperCase(Locale.ROOT).contains(thread))) continue;
+            Integer level = null;
+            try { level = Integer.valueOf(task.levelNo.trim()); } catch (Exception ignored) {}
+            if (request.levelMinimum != null && (level == null || level < request.levelMinimum)) continue;
+            if (request.levelMaximum != null && (level == null || level > request.levelMaximum)) continue;
+            result.add(task);
+        }
+        return result;
+    }
+
+    private static void validateAnalysisRequest(Models.AnalysisRequest request) {
+        validateDate(request.analysisDate, "分析日期");
+        if (request.baselineMode == Models.AnalysisBaselineMode.SPECIFIED_DATE) {
+            validateDate(request.specifiedBaselineDate, "基准日期");
+            if (request.specifiedBaselineDate.compareTo(request.analysisDate) >= 0) throw new IllegalArgumentException("基准日期必须早于分析日期");
+        }
+        if (request.recentDateCount < 2 || request.recentDateCount > 30) throw new IllegalArgumentException("历史平均日期数必须是 2–30");
+        if (request.levelMinimum != null && request.levelMaximum != null && request.levelMinimum > request.levelMaximum) throw new IllegalArgumentException("Level No 起始值不能大于结束值");
+    }
+
+    private static void validateDate(String date, String label) {
+        if (date == null || !date.matches("\\d{8}")) throw new IllegalArgumentException(label + "必须是 YYYYMMDD 格式");
+        SimpleDateFormat format = new SimpleDateFormat("yyyyMMdd", Locale.ROOT); format.setLenient(false);
+        try { format.parse(date); } catch (ParseException e) { throw new IllegalArgumentException(label + "无效：" + date); }
     }
 
     static Map<String, Models.GroupStat> buildGroupStats(List<Models.RunRecord> runs) {
@@ -440,5 +567,9 @@ final class MonitorService implements AutoCloseable {
         return current.getClass().getSimpleName() + (message == null || message.isEmpty() ? "" : "：" + message);
     }
 
-    @Override public void close() { scheduler.shutdownNow(); }
+    @Override public void close() {
+        synchronized (lock) { closed = true; if (pollFuture != null) pollFuture.cancel(false); }
+        scheduler.shutdownNow();
+        analysisExecutor.shutdownNow();
+    }
 }

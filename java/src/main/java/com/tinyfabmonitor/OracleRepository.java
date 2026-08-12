@@ -21,6 +21,7 @@ final class OracleRepository {
     private final String taskSql;
     private final String upstreamDependencySql;
     private final String downstreamDependencySql;
+    private final String completedDatesSql;
 
     OracleRepository(AppConfig config) throws ClassNotFoundException {
         this.config = config;
@@ -34,6 +35,11 @@ final class OracleRepository {
         // 直接使用“字段=?”可能因为 CHAR 尾部补空格而无法命中，导致 DAG 只显示中心节点。
         upstreamDependencySql = "select fab_id, depn_id from " + config.dependencyTable + " where trim(fab_id)=?";
         downstreamDependencySql = "select fab_id, depn_id from " + config.dependencyTable + " where trim(depn_id)=?";
+        completedDatesSql = "select business_date from (" +
+            "select to_char(p.prcss_dt,'yyyymmdd') business_date from " + config.scheduleTable + " p " +
+            "where p.prcss_dt<to_date(?,'yyyymmdd') group by p.prcss_dt " +
+            "having sum(case when upper(trim(p.stat_cde))='R' then 0 else 1 end)=0 order by p.prcss_dt desc" +
+            ") where rownum<=?";
         DriverManager.setLoginTimeout(config.connectTimeoutSeconds);
     }
 
@@ -50,6 +56,7 @@ final class OracleRepository {
     String taskSqlForTest() { return taskSql; }
     String upstreamDependencySqlForTest() { return upstreamDependencySql; }
     String downstreamDependencySqlForTest() { return downstreamDependencySql; }
+    String completedDatesSqlForTest() { return completedDatesSql; }
 
     List<Models.OracleTask> fetchTasks(Connection connection, String processDate) throws SQLException {
         List<Models.OracleTask> result = new ArrayList<Models.OracleTask>();
@@ -84,6 +91,22 @@ final class OracleRepository {
     Models.DependencyAnalysis fetchDependencyAnalysis(Connection connection, String rootFabId, List<Models.OracleTask> currentDateTasks,
                                                        int upstreamDepth, int downstreamDepth) throws SQLException {
         return DependencySearch.load(rootFabId, currentDateTasks, upstreamDepth, downstreamDepth, new CachedBatchLookup(connection));
+    }
+
+    List<String> fetchPreviousCompletedDates(Connection connection, String beforeDate, int maximumCount) throws SQLException {
+        List<String> result = new ArrayList<String>();
+        PreparedStatement statement = connection.prepareStatement(completedDatesSql);
+        statement.setQueryTimeout(90);
+        statement.setString(1, beforeDate);
+        statement.setInt(2, maximumCount);
+        ResultSet rows = statement.executeQuery();
+        try { while (rows.next()) { String value = text(rows.getObject(1)); if (!value.isEmpty()) result.add(value); } }
+        finally { rows.close(); statement.close(); }
+        return result;
+    }
+
+    List<Models.Dependency> fetchDependenciesForOwners(Connection connection, Set<String> fabIds) throws SQLException {
+        return new CachedBatchLookup(connection).upstream(fabIds);
     }
 
     private class CachedBatchLookup implements DependencySearch.BatchLookup {

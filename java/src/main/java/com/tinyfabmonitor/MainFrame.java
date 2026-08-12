@@ -51,8 +51,10 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
     private final JLabel historyMetric = metricValue();
     private final TaskTableModel taskModel = new TaskTableModel();
     private final HistoryTableModel historyModel = new HistoryTableModel();
+    private final AnalysisTableModel analysisModel = new AnalysisTableModel();
     private final JTable taskTable = table(taskModel);
     private final JTable historyTable = table(historyModel);
+    private final JTable analysisTable = table(analysisModel);
     private final TableRowSorter<TaskTableModel> taskSorter = new TableRowSorter<TaskTableModel>(taskModel);
     private final TableRowSorter<HistoryTableModel> historySorter = new TableRowSorter<HistoryTableModel>(historyModel);
     private final DagPanel dag = new DagPanel();
@@ -70,8 +72,21 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
     private final JCheckBox dagHideCompleted = new JCheckBox("隐藏状态 R");
     private final JLabel dagEta = new JLabel("预计完成：请先搜索中心 FAB");
     private final JTextField retentionDays = new JTextField("14", 4);
+    private final JTextField analysisDate = new JTextField(8);
+    private final JComboBox<String> analysisBaselineMode = new JComboBox<String>(new String[]{"前一个完整业务日期", "指定业务日期", "最近完整日期平均"});
+    private final JTextField analysisBaselineDate = new JTextField(8);
+    private final JTextField analysisRecentCount = new JTextField("7", 2);
+    private final JTextField analysisThread = new JTextField(7);
+    private final JTextField analysisLevelMin = new JTextField(3);
+    private final JTextField analysisLevelMax = new JTextField(3);
+    private final JButton analysisRun = new JButton("开始分析");
+    private final JLabel analysisSummary = new JLabel("请选择条件并点击开始分析");
+    private final JLabel analysisDetail = new JLabel(" ");
+    private final JCheckBox analysisCriticalOnly = new JCheckBox("只显示关键路径", true);
+    private final AnalysisDagPanel analysisDag = new AnalysisDagPanel();
     private Models.Dashboard latestDashboard = new Models.Dashboard();
     private long centeredDagRequestId = -1;
+    private long renderedAnalysisRequestId = -1;
 
     MainFrame(MonitorService monitor, Runnable onClose) {
         super("TINY FAB MONITOR - Oracle FAB 运行监控");
@@ -92,6 +107,7 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
         taskTable.setRowSorter(taskSorter);
         historyTable.setRowSorter(historySorter);
         taskTable.setDefaultRenderer(Object.class, new StatusRenderer());
+        analysisTable.setDefaultRenderer(Object.class, new AnalysisRenderer());
         monitor.addListener(this);
         new Timer(1000, e -> render(monitor.dashboard())).start();
     }
@@ -156,7 +172,49 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
         dagTop.add(search, BorderLayout.EAST); dagTop.add(dagEta, BorderLayout.SOUTH);
         dagContainer.add(dagTop, BorderLayout.NORTH); dagContainer.add(dag, BorderLayout.CENTER); tabs.addTab("依赖 DAG", dagContainer);
         tabs.addTab("运行历史", historyPanel());
+        tabs.addTab("耗时分析", analysisPanel());
         return tabs;
+    }
+
+    private JPanel analysisPanel() {
+        JPanel panel = new JPanel(new BorderLayout(0, 8)); panel.setBorder(new EmptyBorder(8, 8, 8, 8));
+        JPanel controls = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        controls.add(new JLabel("分析日期：")); controls.add(analysisDate); controls.add(new JLabel("基准：")); controls.add(analysisBaselineMode);
+        controls.add(new JLabel("指定日期：")); controls.add(analysisBaselineDate); controls.add(new JLabel("平均天数：")); controls.add(analysisRecentCount);
+        controls.add(new JLabel("Thread：")); controls.add(analysisThread); controls.add(new JLabel("Level：")); controls.add(analysisLevelMin);
+        controls.add(new JLabel("至")); controls.add(analysisLevelMax); controls.add(analysisRun);
+        analysisCriticalOnly.setOpaque(false); analysisCriticalOnly.addActionListener(e -> analysisDag.setCriticalOnly(analysisCriticalOnly.isSelected())); controls.add(analysisCriticalOnly);
+        analysisRun.addActionListener(e -> startAnalysis());
+        analysisBaselineMode.addActionListener(e -> updateAnalysisControls());
+        JPanel header = new JPanel(new BorderLayout(0, 6)); header.add(controls, BorderLayout.NORTH);
+        analysisSummary.setFont(analysisSummary.getFont().deriveFont(Font.BOLD, 14f)); analysisSummary.setForeground(new Color(22, 93, 255));
+        JPanel messages = new JPanel(new GridLayout(2, 1)); messages.add(analysisSummary); messages.add(analysisDetail); header.add(messages, BorderLayout.SOUTH);
+        panel.add(header, BorderLayout.NORTH);
+        JScrollPane tableScroll = new JScrollPane(analysisTable);
+        JScrollPane graphScroll = new JScrollPane(analysisDag);
+        JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT, tableScroll, graphScroll); split.setResizeWeight(.58); split.setDividerLocation(300);
+        panel.add(split, BorderLayout.CENTER); updateAnalysisControls(); return panel;
+    }
+
+    private void updateAnalysisControls() {
+        int mode = analysisBaselineMode.getSelectedIndex();
+        analysisBaselineDate.setEnabled(mode == 1); analysisRecentCount.setEnabled(mode == 2);
+    }
+
+    private void startAnalysis() {
+        try {
+            Models.AnalysisRequest request = new Models.AnalysisRequest();
+            request.analysisDate = analysisDate.getText().trim(); request.threadFilter = analysisThread.getText().trim();
+            request.levelMinimum = ViewLogic.parseLevelBound(analysisLevelMin.getText()); request.levelMaximum = ViewLogic.parseLevelBound(analysisLevelMax.getText());
+            if (analysisBaselineMode.getSelectedIndex() == 0) request.baselineMode = Models.AnalysisBaselineMode.PREVIOUS_COMPLETE;
+            else if (analysisBaselineMode.getSelectedIndex() == 1) { request.baselineMode = Models.AnalysisBaselineMode.SPECIFIED_DATE; request.specifiedBaselineDate = analysisBaselineDate.getText().trim(); }
+            else { request.baselineMode = Models.AnalysisBaselineMode.RECENT_AVERAGE; request.recentDateCount = Integer.parseInt(analysisRecentCount.getText().trim()); }
+            monitor.runPerformanceAnalysis(request);
+        } catch (NumberFormatException e) {
+            JOptionPane.showMessageDialog(this, "平均天数必须是 2–30 的整数", "分析条件无效", JOptionPane.WARNING_MESSAGE);
+        } catch (Exception e) {
+            JOptionPane.showMessageDialog(this, e.getMessage(), "分析条件无效", JOptionPane.WARNING_MESSAGE);
+        }
     }
 
     private JPanel historyPanel() {
@@ -322,6 +380,7 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
     private void render(Models.Dashboard dashboard) {
         latestDashboard = dashboard;
         if (!dateField.hasFocus()) dateField.setText(dashboard.processDate);
+        if (analysisDate.getText().trim().isEmpty() && !analysisDate.hasFocus()) analysisDate.setText(dashboard.processDate);
         connection.setText(dashboard.polling ? "● 正在读取" : dashboard.connected ? "● Oracle 已连接" : dashboard.lastError.isEmpty() ? "● 等待连接" : "● Oracle 连接失败");
         connection.setForeground(dashboard.connected ? new Color(22, 143, 98) : dashboard.lastError.isEmpty() ? Color.DARK_GRAY : new Color(216, 59, 59));
         lastPoll.setText("上次刷新：" + UiFormat.dateTime(dashboard.lastPollAt)); nextPoll.setText("下次刷新：" + UiFormat.dateTime(dashboard.nextPollAt));
@@ -339,9 +398,23 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
         else if (!dashboard.dagError.isEmpty()) { dagEta.setText("预计完成：依赖读取失败"); dagEta.setToolTipText(dashboard.dagError); }
         else if (dashboard.dagRootFabId.isEmpty()) { dagEta.setText("预计完成：请先搜索中心 FAB"); dagEta.setToolTipText(null); }
         else { dagEta.setText(dashboard.dagEta.summary); dagEta.setToolTipText(dashboard.dagEta.detail); }
+        renderAnalysis(dashboard.analysis);
         if (!dashboard.dagLoading && dashboard.dagError.isEmpty() && !dashboard.dagRootFabId.isEmpty() && centeredDagRequestId != dashboard.dagRequestId) {
             centeredDagRequestId = dashboard.dagRequestId;
             SwingUtilities.invokeLater(() -> dag.focusFabId(dashboard.dagRootFabId));
+        }
+    }
+
+    private void renderAnalysis(Models.AnalysisState state) {
+        analysisRun.setEnabled(!state.loading);
+        if (state.loading) { analysisSummary.setText("正在读取数据库并分析，请稍候…"); analysisDetail.setText("分析不会加入自动刷新，也不会并发执行第二次分析。"); return; }
+        if (!state.error.isEmpty()) { analysisSummary.setText("分析失败：" + state.error); analysisSummary.setForeground(new Color(190, 35, 35)); return; }
+        analysisSummary.setForeground(new Color(22, 93, 255));
+        if (state.result == null || state.result.analysisDate.isEmpty()) return;
+        analysisSummary.setText(state.result.summary); analysisDetail.setText(state.result.detail);
+        if (renderedAnalysisRequestId != state.requestId) {
+            renderedAnalysisRequestId = state.requestId;
+            analysisModel.setRows(state.result.rows); analysisDag.setResult(state.result);
         }
     }
 
@@ -376,7 +449,9 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
     private static JButton button(String title, Color color) { JButton button = new JButton(title); button.setForeground(Color.WHITE); button.setBackground(color); button.setFocusPainted(false); return button; }
     private static JTable table(AbstractTableModel model) {
         JTable table = new JTable(model); table.setRowHeight(42); table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF); table.setFillsViewportHeight(true);
-        int[] widths = model instanceof TaskTableModel ? new int[]{135, 220, 210, 65, 135, 135, 135, 155, 240} : new int[]{95, 145, 220, 145, 135, 135, 125, 260};
+        int[] widths = model instanceof TaskTableModel ? new int[]{135, 220, 210, 65, 135, 135, 135, 155, 240}
+            : model instanceof AnalysisTableModel ? new int[]{135, 210, 145, 80, 115, 115, 115, 115, 115, 115, 115, 100, 230}
+            : new int[]{95, 145, 220, 145, 135, 135, 125, 260};
         for (int i = 0; i < widths.length; i++) table.getColumnModel().getColumn(i).setPreferredWidth(widths[i]);
         return table;
     }
@@ -388,6 +463,18 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
                 String status = String.valueOf(value); component.setForeground("E".equals(status) ? new Color(190, 35, 35) : "I".equals(status) ? new Color(22, 93, 255) : "R".equals(status) ? new Color(10, 125, 82) : Color.DARK_GRAY);
                 component.setFont(component.getFont().deriveFont(Font.BOLD));
             } else if (!selected) component.setForeground(Color.DARK_GRAY);
+            return component;
+        }
+    }
+
+    private static class AnalysisRenderer extends DefaultTableCellRenderer {
+        @Override public java.awt.Component getTableCellRendererComponent(JTable table, Object value, boolean selected, boolean focus, int row, int column) {
+            java.awt.Component component = super.getTableCellRendererComponent(table, value, selected, focus, row, column);
+            if (!selected) {
+                Models.AnalysisTaskMetric metric = ((AnalysisTableModel) table.getModel()).rowAt(table.convertRowIndexToModel(row));
+                component.setBackground(metric.delayContributionSeconds > 0 ? new Color(255, 235, 235) : metric.completionDelaySeconds != null && metric.completionDelaySeconds > 0 ? new Color(255, 247, 229) : Color.WHITE);
+                component.setForeground(Color.DARK_GRAY);
+            }
             return component;
         }
     }
@@ -427,5 +514,24 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
                 case 6: return r.startedAt == null ? "仅异常记录" : r.completedAt == null ? "运行中" : UiFormat.duration(r.durationSeconds); default: return UiFormat.anomalies(r.anomalyTimes);
             }
         }
+    }
+
+    private static class AnalysisTableModel extends AbstractTableModel {
+        private final String[] columns = {"FAB ID", "FAB 描述", "Thread / Level", "精度", "当天执行", "基准执行", "执行差", "当天等待", "基准等待", "等待差", "完成偏移差", "延迟贡献", "原因"};
+        private List<Models.AnalysisTaskMetric> rows = new ArrayList<Models.AnalysisTaskMetric>();
+        void setRows(List<Models.AnalysisTaskMetric> values) { rows = new ArrayList<Models.AnalysisTaskMetric>(values); fireTableDataChanged(); }
+        Models.AnalysisTaskMetric rowAt(int row) { return rows.get(row); }
+        public int getRowCount() { return rows.size(); } public int getColumnCount() { return columns.length; } public String getColumnName(int column) { return columns[column]; }
+        public Object getValueAt(int row, int column) {
+            Models.AnalysisTaskMetric m = rows.get(row);
+            switch (column) {
+                case 0: return m.fabId; case 1: return m.fabDescription; case 2: return m.threadId + " / " + m.levelNo; case 3: return m.confidence;
+                case 4: return duration(m.executionSeconds); case 5: return duration(m.baselineExecutionSeconds); case 6: return signed(m.executionDeltaSeconds);
+                case 7: return duration(m.waitSeconds); case 8: return duration(m.baselineWaitSeconds); case 9: return signed(m.waitDeltaSeconds);
+                case 10: return signed(m.completionDelaySeconds); case 11: return UiFormat.duration(m.delayContributionSeconds); default: return m.reason;
+            }
+        }
+        private static String duration(Long seconds) { return seconds == null ? "--" : UiFormat.duration(seconds); }
+        private static String signed(Long seconds) { return seconds == null ? "--" : (seconds >= 0 ? "+" : "-") + UiFormat.duration(Math.abs(seconds)); }
     }
 }

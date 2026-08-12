@@ -92,6 +92,71 @@ final class Models {
         List<String> criticalPath = new ArrayList<String>();
     }
 
+    enum AnalysisBaselineMode { PREVIOUS_COMPLETE, SPECIFIED_DATE, RECENT_AVERAGE }
+
+    static class AnalysisRequest {
+        String analysisDate = "";
+        AnalysisBaselineMode baselineMode = AnalysisBaselineMode.PREVIOUS_COMPLETE;
+        String specifiedBaselineDate = "";
+        int recentDateCount = 7;
+        String threadFilter = "";
+        Integer levelMinimum;
+        Integer levelMaximum;
+    }
+
+    static class AnalysisTaskMetric {
+        String fabId = "";
+        String fabDescription = "";
+        String threadId = "";
+        String levelNo = "";
+        String status = "";
+        Date startedAt;
+        Date completedAt;
+        Long executionSeconds;
+        Long baselineExecutionSeconds;
+        Long executionDeltaSeconds;
+        Long waitSeconds;
+        Long baselineWaitSeconds;
+        Long waitDeltaSeconds;
+        Long completionOffsetSeconds;
+        Long baselineCompletionOffsetSeconds;
+        Long completionDelaySeconds;
+        long delayContributionSeconds;
+        int anomalyCount;
+        String confidence = "数据不足";
+        String reason = "数据不足";
+        boolean criticalPath;
+    }
+
+    static class AnalysisResult {
+        String analysisDate = "";
+        List<String> baselineDates = new ArrayList<String>();
+        String baselineLabel = "";
+        boolean targetComplete;
+        boolean targetEstimatedStart;
+        Date targetStart;
+        Date targetFinish;
+        long targetDurationSeconds;
+        long baselineDurationSeconds;
+        long overallDeltaSeconds;
+        Date predictedFinish;
+        String summary = "";
+        String detail = "";
+        List<AnalysisTaskMetric> rows = new ArrayList<AnalysisTaskMetric>();
+        List<Dependency> dependencies = new ArrayList<Dependency>();
+        List<String> criticalPath = new ArrayList<String>();
+        int preciseCount;
+        int completionOnlyCount;
+        int insufficientCount;
+    }
+
+    static class AnalysisState {
+        boolean loading;
+        String error = "";
+        long requestId;
+        AnalysisResult result = new AnalysisResult();
+    }
+
     static class TaskView extends OracleTask {
         public Date startedAt;
         public Date completedAt;
@@ -124,6 +189,7 @@ final class Models {
         String dagError = "";
         long dagRequestId;
         DagEta dagEta = new DagEta();
+        AnalysisState analysis = new AnalysisState();
         Map<String, Long> historicalAverageByFab = new LinkedHashMap<String, Long>();
         List<RunRecord> recentRuns = new ArrayList<RunRecord>();
         int totalHistoricalRuns;

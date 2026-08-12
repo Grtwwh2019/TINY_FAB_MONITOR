@@ -25,7 +25,8 @@ final class AppConfig {
     final String fabPlanTable;
     final String dependencyTable;
     final String processDate;
-    final int pollIntervalMinutes;
+    final int pollIntervalMinMinutes;
+    final int pollIntervalMaxMinutes;
     final int dagUpstreamLevels;
     final int dagDownstreamLevels;
 
@@ -46,7 +47,18 @@ final class AppConfig {
         dependencyTable = table(p, "tables.fab_dependency");
         processDate = trim(p.getProperty("monitor.process_date"));
         if (!DATE.matcher(processDate).matches()) throw new IllegalArgumentException("monitor.process_date 必须是 YYYYMMDD 格式");
-        pollIntervalMinutes = positiveInt(p, "monitor.poll_interval_minutes", 5);
+        String pollMin = trim(p.getProperty("monitor.poll_interval_min_minutes"));
+        String pollMax = trim(p.getProperty("monitor.poll_interval_max_minutes"));
+        if (pollMin.isEmpty() && pollMax.isEmpty()) {
+            int legacyPoll = positiveInt(p, "monitor.poll_interval_minutes", 5);
+            pollIntervalMinMinutes = legacyPoll;
+            pollIntervalMaxMinutes = legacyPoll;
+        } else {
+            if (pollMin.isEmpty() || pollMax.isEmpty()) throw new IllegalArgumentException("随机刷新必须同时配置 monitor.poll_interval_min_minutes 和 monitor.poll_interval_max_minutes");
+            pollIntervalMinMinutes = rangedInt(p, "monitor.poll_interval_min_minutes", 4, 1, 1440);
+            pollIntervalMaxMinutes = rangedInt(p, "monitor.poll_interval_max_minutes", 6, 1, 1440);
+            if (pollIntervalMinMinutes > pollIntervalMaxMinutes) throw new IllegalArgumentException("随机刷新最小分钟数不能大于最大分钟数");
+        }
         dagUpstreamLevels = rangedInt(p, "monitor.dag_upstream_levels", 5, 0, 15);
         dagDownstreamLevels = rangedInt(p, "monitor.dag_downstream_levels", 5, 0, 15);
         String storage = trim(p.getProperty("storage.directory"));

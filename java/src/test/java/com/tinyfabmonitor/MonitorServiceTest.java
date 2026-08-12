@@ -77,6 +77,14 @@ public class MonitorServiceTest {
         assertEquals("W", statuses.get("FAB-C"));
     }
 
+    @Test public void randomPollIntervalAlwaysStaysInsideInclusiveRange() {
+        assertEquals(5, MonitorService.randomPollInterval(5, 5));
+        for (int i = 0; i < 500; i++) {
+            int value = MonitorService.randomPollInterval(4, 6);
+            assertTrue(value >= 4 && value <= 6);
+        }
+    }
+
     private static void observe(MonitorService monitor, Models.TaskKey key, String status, long at) throws Exception {
         Models.OracleTask task = new Models.OracleTask();
         task.processDate = key.processDate; task.threadId = key.threadId; task.levelNo = key.levelNo; task.fabId = key.fabId;
