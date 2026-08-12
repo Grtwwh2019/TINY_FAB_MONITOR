@@ -123,6 +123,11 @@ final class Models {
         Date completedAt;
         Date baselineCompletedAt;
         boolean baselineCompletionAverage;
+        boolean executionEstimated;
+        boolean baselineExecutionEstimated;
+        boolean waitEstimated;
+        boolean baselineWaitEstimated;
+        String startBasis = "";
         Long executionSeconds;
         Long baselineExecutionSeconds;
         Long executionDeltaSeconds;
@@ -160,6 +165,7 @@ final class Models {
         List<Dependency> dependencies = new ArrayList<Dependency>();
         List<String> criticalPath = new ArrayList<String>();
         int preciseCount;
+        int estimatedCount;
         int completionOnlyCount;
         int insufficientCount;
     }

@@ -472,6 +472,7 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
             : model instanceof AnalysisTableModel ? new int[]{135, 210, 145, 80, 155, 155, 115, 115, 115, 115, 115, 115, 115, 100, 230}
             : new int[]{95, 145, 220, 145, 135, 135, 125, 260};
         for (int i = 0; i < widths.length; i++) table.getColumnModel().getColumn(i).setPreferredWidth(widths[i]);
+        TableCellClipboard.install(table);
         return table;
     }
 

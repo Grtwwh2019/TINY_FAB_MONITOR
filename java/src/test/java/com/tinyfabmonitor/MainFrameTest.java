@@ -4,6 +4,8 @@ import org.junit.Test;
 
 import java.util.Arrays;
 import java.util.List;
+import javax.swing.JTable;
+import javax.swing.table.DefaultTableModel;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -68,6 +70,14 @@ public class MainFrameTest {
         assertFalse(ViewLogic.showDagTask(completed, "FAB-CENTER", true));
         assertTrue(ViewLogic.showDagTask(running, "FAB-CENTER", true));
         assertTrue(ViewLogic.showDagTask(completed, "FAB-CENTER", false));
+    }
+
+    @Test public void tableClipboardReturnsOnlyTheFocusedCellText() {
+        JTable table = new JTable(new DefaultTableModel(new Object[][]{{"A", "B"}, {"C", "D"}}, new Object[]{"X", "Y"}));
+        TableCellClipboard.install(table);
+        table.changeSelection(1, 0, false, false);
+        assertTrue(table.getCellSelectionEnabled());
+        assertEquals("C", TableCellClipboard.selectedCellText(table));
     }
 
     private static void assertInvalid(Runnable action) {

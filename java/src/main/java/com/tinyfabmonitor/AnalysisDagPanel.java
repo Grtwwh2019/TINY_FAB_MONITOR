@@ -38,6 +38,7 @@ final class AnalysisDagPanel extends JPanel {
         setBackground(new Color(249, 251, 253));
         setPreferredSize(new Dimension(1000, 260));
         ToolTipManager.sharedInstance().registerComponent(this);
+        PersistentNodeTooltip.install(this, this::hasNodeAt);
     }
 
     void setCriticalOnly(boolean value) { criticalOnly = value; rebuild(); }
@@ -125,6 +126,11 @@ final class AnalysisDagPanel extends JPanel {
                 "<br><b>完成偏移差：</b>" + nullableSigned(m.completionDelaySeconds) + "</html>";
         }
         return null;
+    }
+
+    private boolean hasNodeAt(java.awt.Point point) {
+        for (Node node : nodes.values()) if (point.x >= node.x && point.x <= node.x + WIDTH && point.y >= node.y && point.y <= node.y + HEIGHT) return true;
+        return false;
     }
 
     private static Color color(Models.AnalysisTaskMetric m) {

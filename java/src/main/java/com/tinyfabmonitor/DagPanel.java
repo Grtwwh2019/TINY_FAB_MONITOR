@@ -60,6 +60,7 @@ final class DagPanel extends JPanel {
         setBackground(new Color(249, 251, 253));
         setPreferredSize(new Dimension(1100, 570));
         ToolTipManager.sharedInstance().registerComponent(this);
+        PersistentNodeTooltip.install(this, point -> nodeAt(point) != null);
         addMouseWheelListener(this::zoom);
         addMouseListener(new MouseAdapter() {
             public void mousePressed(MouseEvent event) {
