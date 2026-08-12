@@ -27,6 +27,9 @@ public class PerformanceAnalyzerTest {
         Models.AnalysisTaskMetric b = find(result, "B");
         assertEquals("完成时间分析", b.confidence);
         assertEquals(Long.valueOf(500), b.completionDelaySeconds);
+        assertEquals(2000L * 1000L, b.completedAt.getTime());
+        assertEquals(500L * 1000L, b.baselineCompletedAt.getTime());
+        assertFalse(b.baselineCompletionAverage);
     }
 
     @Test public void separatesExecutionAndWaitingDelayWhenIRHistoryExists() {
@@ -63,6 +66,10 @@ public class PerformanceAnalyzerTest {
         Models.AnalysisResult result = analyze(days, new ArrayList<Models.RunRecord>(), new ArrayList<Models.Dependency>(), "20260103", Arrays.asList("20260102", "20260101"));
         assertEquals(900, result.baselineDurationSeconds);
         assertEquals(300, result.overallDeltaSeconds);
+        Models.AnalysisTaskMetric b = find(result, "B");
+        assertTrue(b.baselineCompletionAverage);
+        assertEquals(Long.valueOf(900), b.baselineCompletionOffsetSeconds);
+        assertEquals(null, b.baselineCompletedAt);
     }
 
     @Test public void marksNewTaskWithoutBaselineAsInsufficientInsteadOfInventingDelay() {

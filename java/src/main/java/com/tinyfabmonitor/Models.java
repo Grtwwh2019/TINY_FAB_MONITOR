@@ -121,6 +121,8 @@ final class Models {
         String status = "";
         Date startedAt;
         Date completedAt;
+        Date baselineCompletedAt;
+        boolean baselineCompletionAverage;
         Long executionSeconds;
         Long baselineExecutionSeconds;
         Long executionDeltaSeconds;

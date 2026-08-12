@@ -469,7 +469,7 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
     private static JTable table(AbstractTableModel model) {
         JTable table = new JTable(model); table.setRowHeight(42); table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF); table.setFillsViewportHeight(true);
         int[] widths = model instanceof TaskTableModel ? new int[]{135, 220, 210, 65, 135, 135, 135, 155, 240}
-            : model instanceof AnalysisTableModel ? new int[]{135, 210, 145, 80, 115, 115, 115, 115, 115, 115, 115, 100, 230}
+            : model instanceof AnalysisTableModel ? new int[]{135, 210, 145, 80, 155, 155, 115, 115, 115, 115, 115, 115, 115, 100, 230}
             : new int[]{95, 145, 220, 145, 135, 135, 125, 260};
         for (int i = 0; i < widths.length; i++) table.getColumnModel().getColumn(i).setPreferredWidth(widths[i]);
         return table;
@@ -536,7 +536,7 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
     }
 
     private static class AnalysisTableModel extends AbstractTableModel {
-        private final String[] columns = {"FAB ID", "FAB 描述", "Thread / Level", "精度", "当天执行", "基准执行", "执行差", "当天等待", "基准等待", "等待差", "完成偏移差", "延迟贡献", "原因"};
+        private final String[] columns = {"FAB ID", "FAB 描述", "Thread / Level", "精度", "当天完成时间", "基准完成时间", "当天执行", "基准执行", "执行差", "当天等待", "基准等待", "等待差", "完成偏移差", "延迟贡献", "原因"};
         private List<Models.AnalysisTaskMetric> rows = new ArrayList<Models.AnalysisTaskMetric>();
         void setRows(List<Models.AnalysisTaskMetric> values) { rows = new ArrayList<Models.AnalysisTaskMetric>(values); fireTableDataChanged(); }
         Models.AnalysisTaskMetric rowAt(int row) { return rows.get(row); }
@@ -545,10 +545,15 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
             Models.AnalysisTaskMetric m = rows.get(row);
             switch (column) {
                 case 0: return m.fabId; case 1: return m.fabDescription; case 2: return m.threadId + " / " + m.levelNo; case 3: return m.confidence;
-                case 4: return duration(m.executionSeconds); case 5: return duration(m.baselineExecutionSeconds); case 6: return signed(m.executionDeltaSeconds);
-                case 7: return duration(m.waitSeconds); case 8: return duration(m.baselineWaitSeconds); case 9: return signed(m.waitDeltaSeconds);
-                case 10: return signed(m.completionDelaySeconds); case 11: return UiFormat.duration(m.delayContributionSeconds); default: return m.reason;
+                case 4: return UiFormat.dateTime(m.completedAt); case 5: return baselineCompletion(m);
+                case 6: return duration(m.executionSeconds); case 7: return duration(m.baselineExecutionSeconds); case 8: return signed(m.executionDeltaSeconds);
+                case 9: return duration(m.waitSeconds); case 10: return duration(m.baselineWaitSeconds); case 11: return signed(m.waitDeltaSeconds);
+                case 12: return signed(m.completionDelaySeconds); case 13: return UiFormat.duration(m.delayContributionSeconds); default: return m.reason;
             }
+        }
+        private static String baselineCompletion(Models.AnalysisTaskMetric metric) {
+            if (metric.baselineCompletionAverage) return metric.baselineCompletionOffsetSeconds == null ? "--" : "平均偏移 " + UiFormat.duration(metric.baselineCompletionOffsetSeconds);
+            return UiFormat.dateTime(metric.baselineCompletedAt);
         }
         private static String duration(Long seconds) { return seconds == null ? "--" : UiFormat.duration(seconds); }
         private static String signed(Long seconds) { return seconds == null ? "--" : (seconds >= 0 ? "+" : "-") + UiFormat.duration(Math.abs(seconds)); }

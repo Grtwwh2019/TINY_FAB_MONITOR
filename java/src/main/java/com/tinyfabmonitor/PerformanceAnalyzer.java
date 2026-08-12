@@ -41,6 +41,7 @@ final class PerformanceAnalyzer {
         Long execution;
         Long wait;
         Long completionOffset;
+        Date singleCompletedAt;
     }
 
     private PerformanceAnalyzer() {}
@@ -101,7 +102,8 @@ final class PerformanceAnalyzer {
         result.criticalPath.addAll(critical);
         Map<String, Models.AnalysisTaskMetric> metricsByFab = new LinkedHashMap<String, Models.AnalysisTaskMetric>();
         for (TaskSnapshot task : target.byGroup.values()) {
-            Models.AnalysisTaskMetric metric = metric(task, baselineAverage(task.task, baselines));
+            Models.AnalysisTaskMetric metric = metric(task, baselineAverage(task.task, baselines),
+                request.baselineMode == Models.AnalysisBaselineMode.RECENT_AVERAGE);
             metric.criticalPath = critical.contains(normalize(task.task.fabId));
             classify(metric);
             metricsByFab.put(normalize(metric.fabId), metric);
@@ -203,11 +205,13 @@ final class PerformanceAnalyzer {
         return null;
     }
 
-    private static Models.AnalysisTaskMetric metric(TaskSnapshot task, Averages baseline) {
+    private static Models.AnalysisTaskMetric metric(TaskSnapshot task, Averages baseline, boolean baselineAverageMode) {
         Models.AnalysisTaskMetric value = new Models.AnalysisTaskMetric();
         value.fabId = task.task.fabId; value.fabDescription = task.task.fabDescription;
         value.threadId = task.task.threadId; value.levelNo = task.task.levelNo; value.status = task.task.status;
         value.startedAt = copy(task.startedAt); value.completedAt = copy(task.completedAt);
+        value.baselineCompletedAt = copy(baseline.singleCompletedAt);
+        value.baselineCompletionAverage = baselineAverageMode;
         value.executionSeconds = task.executionSeconds; value.waitSeconds = task.waitSeconds; value.anomalyCount = task.anomalyCount;
         value.baselineExecutionSeconds = baseline.execution; value.baselineWaitSeconds = baseline.wait;
         value.baselineCompletionOffsetSeconds = baseline.completionOffset;
@@ -299,7 +303,12 @@ final class PerformanceAnalyzer {
         }
         Averages value = new Averages();
         value.execution = ec == 0 ? null : execution / ec; value.wait = wc == 0 ? null : wait / wc;
-        value.completionOffset = cc == 0 ? null : completion / cc; return value;
+        value.completionOffset = cc == 0 ? null : completion / cc;
+        if (days.size() == 1) {
+            TaskSnapshot task = days.get(0).byGroup.get(groupKey(taskKey));
+            if (task != null) value.singleCompletedAt = copy(task.completedAt);
+        }
+        return value;
     }
 
     private static long averageDayDuration(List<DaySnapshot> days) {
