@@ -416,11 +416,11 @@ final class MonitorService implements AutoCloseable {
                 try {
                     AnalysisConnection connection = new AnalysisConnection();
                     try {
-                        List<Models.OracleTask> target = filteredTasks(tasksForAnalysisDate(connection, request.analysisDate), request);
+                        List<Models.OracleTask> target = tasksForAnalysisDate(connection, request.analysisDate);
                         tasksByDate.put(request.analysisDate, target);
                         if (request.baselineMode == Models.AnalysisBaselineMode.SPECIFIED_DATE) {
                             baselineDates = Collections.singletonList(request.specifiedBaselineDate);
-                            List<Models.OracleTask> baseline = filteredTasks(tasksForAnalysisDate(connection, request.specifiedBaselineDate), request);
+                            List<Models.OracleTask> baseline = tasksForAnalysisDate(connection, request.specifiedBaselineDate);
                             tasksByDate.put(request.specifiedBaselineDate, baseline);
                         } else {
                             List<String> candidates = baselineDateCandidates(connection, request);
@@ -428,7 +428,7 @@ final class MonitorService implements AutoCloseable {
                             baselineDates = new ArrayList<String>();
                             List<String> rejected = new ArrayList<String>();
                             for (String date : candidates) {
-                                List<Models.OracleTask> baseline = filteredTasks(tasksForAnalysisDate(connection, date), request);
+                                List<Models.OracleTask> baseline = tasksForAnalysisDate(connection, date);
                                 String issue = PerformanceAnalyzer.baselineIssue(request, date, baseline, analysisRuns);
                                 if (issue == null) {
                                     baselineDates.add(date); tasksByDate.put(date, baseline);
@@ -507,22 +507,6 @@ final class MonitorService implements AutoCloseable {
         public void close() throws Exception { if (connection != null) connection.close(); }
     }
 
-    private static List<Models.OracleTask> filteredTasks(List<Models.OracleTask> values, Models.AnalysisRequest request) {
-        List<Models.OracleTask> result = new ArrayList<Models.OracleTask>();
-        String thread = request.threadFilter == null ? "" : request.threadFilter.trim().toUpperCase(Locale.ROOT);
-        for (Models.OracleTask task : values) {
-            boolean boundary = taskMatches(task, request.startThreadId, request.startLevelNo, request.startFabId) ||
-                taskMatches(task, request.endThreadId, request.endLevelNo, request.endFabId);
-            if (!boundary && !thread.isEmpty() && (task.threadId == null || !task.threadId.toUpperCase(Locale.ROOT).contains(thread))) continue;
-            Integer level = null;
-            try { level = Integer.valueOf(task.levelNo.trim()); } catch (Exception ignored) {}
-            if (!boundary && request.levelMinimum != null && (level == null || level < request.levelMinimum)) continue;
-            if (!boundary && request.levelMaximum != null && (level == null || level > request.levelMaximum)) continue;
-            result.add(task);
-        }
-        return result;
-    }
-
     private static void validateAnalysisRequest(Models.AnalysisRequest request) {
         validateDate(request.analysisDate, "分析日期");
         if (request.baselineMode == Models.AnalysisBaselineMode.SPECIFIED_DATE) {
@@ -531,17 +515,21 @@ final class MonitorService implements AutoCloseable {
         }
         if (request.recentDateCount < 2 || request.recentDateCount > 30) throw new IllegalArgumentException("历史平均日期数必须是 2–30");
         if (request.levelMinimum != null && request.levelMaximum != null && request.levelMinimum > request.levelMaximum) throw new IllegalArgumentException("Level No 起始值不能大于结束值");
-        validateBoundaryTask("开始基准任务", request.startThreadId, request.startLevelNo, request.startFabId);
-        validateBoundaryTask("结束基准任务", request.endThreadId, request.endLevelNo, request.endFabId);
+        validateBoundaryTask("批次启动作业", request.startThreadId, request.startLevelNo, request.startFabId);
+        validateBoundaryTask("批次结束作业", request.endThreadId, request.endLevelNo, request.endFabId);
+        if (taskIdentity(request.startThreadId, request.startLevelNo, request.startFabId).equals(
+            taskIdentity(request.endThreadId, request.endLevelNo, request.endFabId))) {
+            throw new IllegalArgumentException("启动作业和结束作业不能相同");
+        }
+        if ("20".equals(normalize(request.endLevelNo))) throw new IllegalArgumentException("Level 20 循环 Poll 作业不能作为批次结束作业");
     }
 
     private static void validateBoundaryTask(String label, String threadId, String levelNo, String fabId) {
         if (blank(threadId) || blank(levelNo) || blank(fabId)) throw new IllegalArgumentException(label + "必须填写 Thread ID、Level No 和 FAB ID");
     }
 
-    private static boolean taskMatches(Models.TaskKey task, String threadId, String levelNo, String fabId) {
-        return normalize(task.threadId).equals(normalize(threadId)) && normalize(task.levelNo).equals(normalize(levelNo)) &&
-            normalize(task.fabId).equals(normalize(fabId));
+    private static String taskIdentity(String threadId, String levelNo, String fabId) {
+        return normalize(threadId) + "|" + normalize(levelNo) + "|" + normalize(fabId);
     }
 
     private static boolean blank(String value) { return value == null || value.trim().isEmpty(); }
