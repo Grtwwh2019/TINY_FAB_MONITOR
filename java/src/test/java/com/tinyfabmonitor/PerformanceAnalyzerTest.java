@@ -8,6 +8,10 @@ import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -24,12 +28,14 @@ public class PerformanceAnalyzerTest {
         assertEquals("R", result.anchorMode);
         assertEquals(1000, result.targetDurationSeconds);
         assertEquals(500, result.baselineDurationSeconds);
-        assertEquals(500, result.overallDeltaSeconds);
+        assertEquals(1500, result.overallDeltaSeconds);
+        assertEquals(Long.valueOf(2000), result.targetBusinessCompletionOffsetSeconds);
+        assertEquals(500, result.baselineBusinessCompletionOffsetSeconds);
         Models.AnalysisTaskMetric b = find(result, "B");
         assertEquals("仅完成时间分析", b.confidence);
         assertEquals(Long.valueOf(500), b.completionDelaySeconds);
-        assertEquals(2000L * 1000L, b.completedAt.getTime());
-        assertEquals(500L * 1000L, b.baselineCompletedAt.getTime());
+        assertEquals(dateAt("20260102", 2000).getTime(), b.completedAt.getTime());
+        assertEquals(dateAt("20260101", 500).getTime(), b.baselineCompletedAt.getTime());
         assertFalse(b.baselineCompletionAverage);
     }
 
@@ -106,7 +112,7 @@ public class PerformanceAnalyzerTest {
         days.put("20260102", Arrays.asList(task("20260102", "A", "R", 1000), task("20260102", "B", "R", 2000), task("20260102", "LATE", "R", 4000)));
         days.put("20260101", Arrays.asList(task("20260101", "A", "R", 500), task("20260101", "B", "R", 1500), task("20260101", "LATE", "R", 5000)));
         Models.AnalysisResult result = analyze(days, new ArrayList<Models.RunRecord>(), new ArrayList<Models.Dependency>(), "20260102", Arrays.asList("20260101"));
-        assertEquals(2000L * 1000L, result.targetFinish.getTime());
+        assertEquals(dateAt("20260102", 2000).getTime(), result.targetFinish.getTime());
         assertEquals(1000, result.targetDurationSeconds);
     }
 
@@ -116,11 +122,11 @@ public class PerformanceAnalyzerTest {
         days.put("20260101", Arrays.asList(task("20260101", "A", "R", 800), task("20260101", "B", "R", 1600)));
         List<Models.RunRecord> runs = Arrays.asList(run("20251231", "A", 100, 400));
         Models.AnalysisResult result = analyze(days, runs, new ArrayList<Models.Dependency>(), "20260102", Arrays.asList("20260101"));
-        assertEquals(1000L * 1000L, result.targetStart.getTime());
+        assertEquals(dateAt("20260102", 1000).getTime(), result.targetStart.getTime());
         assertFalse(result.targetEstimatedStart);
         assertEquals("R", result.anchorMode);
-        assertTrue(result.startBasis.contains("统一使用启动作业 R"));
-        assertEquals(700, result.overallDeltaSeconds);
+        assertTrue(result.startBasis.contains("整体 delay 只比较结束作业"));
+        assertEquals(900, result.overallDeltaSeconds);
     }
 
     @Test public void missingIDoesNotPretendPredecessorRIsAnIStart() {
@@ -131,7 +137,7 @@ public class PerformanceAnalyzerTest {
         Models.AnalysisTaskMetric b = find(result, "B");
         assertEquals(null, b.startedAt);
         assertEquals(null, b.executionSeconds);
-        assertEquals(1000L * 1000L, b.readinessAt.getTime());
+        assertEquals(dateAt("20260102", 1000).getTime(), b.readinessAt.getTime());
         assertEquals(Long.valueOf(1500), b.readyToCompleteSeconds);
         assertEquals("R 区间分析", b.confidence);
     }
@@ -143,7 +149,7 @@ public class PerformanceAnalyzerTest {
         List<Models.RunRecord> runs = Arrays.asList(run("20251231", "A", 100, 400), run("20251231", "B", 460, 800));
         Models.AnalysisResult result = analyze(days, runs, Arrays.asList(new Models.Dependency("B", "A")), "20260102", Arrays.asList("20260101"));
         Models.AnalysisTaskMetric b = find(result, "B");
-        assertEquals(2160L * 1000L, b.startedAt.getTime());
+        assertEquals(dateAt("20260102", 2160).getTime(), b.startedAt.getTime());
         assertEquals(Long.valueOf(1160), b.waitSeconds);
         assertEquals(Long.valueOf(1500), b.readyToCompleteSeconds);
         assertTrue(b.startBasis.contains("历史执行典型值"));
@@ -160,7 +166,7 @@ public class PerformanceAnalyzerTest {
         Models.AnalysisResult result = analyze(days, runs,
             Arrays.asList(new Models.Dependency("B", "POLL")), "20260102", Arrays.asList("20260101"));
         Models.AnalysisTaskMetric b = find(result, "B");
-        assertEquals(2200L * 1000L, b.startedAt.getTime());
+        assertEquals(dateAt("20260102", 2200).getTime(), b.startedAt.getTime());
         assertTrue(b.startBasis.contains("自身 R - 历史执行典型值"));
     }
 
@@ -177,7 +183,7 @@ public class PerformanceAnalyzerTest {
             "20260102", Arrays.asList("20260101"));
         Models.AnalysisTaskMetric b = find(result, "B");
         assertEquals(null, b.startedAt);
-        assertEquals(1500L * 1000L, b.readinessAt.getTime());
+        assertEquals(dateAt("20260102", 1500).getTime(), b.readinessAt.getTime());
         assertEquals(Long.valueOf(1000), b.readyToCompleteSeconds);
         assertTrue(b.readinessPartial);
         assertEquals("R 区间分析", b.confidence);
@@ -238,10 +244,10 @@ public class PerformanceAnalyzerTest {
         Models.AnalysisResult result = PerformanceAnalyzer.analyze(request, days,
             Arrays.asList(run("20251231", "B", 100, 400)),
             Arrays.asList(new Models.Dependency("B", "A"), new Models.Dependency("C", "B")),
-            Arrays.asList("20260101"), new Date(5000L * 1000L));
-        assertEquals(2500L * 1000L, result.targetStart.getTime());
+            Arrays.asList("20260101"), dateAt("20260102", 5000));
+        assertEquals(dateAt("20260102", 2500).getTime(), result.targetStart.getTime());
         assertEquals("R", result.anchorMode);
-        assertTrue(result.startBasis.contains("统一使用启动作业 R"));
+        assertTrue(result.startBasis.contains("整体 delay 只比较结束作业"));
     }
 
     @Test public void level20StartBoundaryWithoutHistoryRejectsItsLoopingR() {
@@ -253,24 +259,24 @@ public class PerformanceAnalyzerTest {
         request.endThreadId = "T"; request.endLevelNo = "41"; request.endFabId = "B";
         try {
             PerformanceAnalyzer.analyze(request, days, new ArrayList<Models.RunRecord>(),
-                Arrays.asList(new Models.Dependency("B", "POLL")), new ArrayList<String>(), new Date(5000));
+                Arrays.asList(new Models.Dependency("B", "POLL")), new ArrayList<String>(), dateAt("20260102", 5000));
             throw new AssertionError("Expected Level 20 start boundary to be rejected");
         } catch (IllegalArgumentException expected) {
             assertTrue(expected.getMessage().contains("Level 20"));
-            assertTrue(expected.getMessage().contains("不能使用循环 Poll 的 R"));
+            assertTrue(expected.getMessage().contains("不能作为批次启动作业"));
         }
     }
 
-    @Test public void usesIOnlyWhenTargetAndEveryBaselineHaveExactI() {
+    @Test public void overallComparisonAlwaysUsesEndRClockEvenWhenExactIExists() {
         Map<String, List<Models.OracleTask>> days = new LinkedHashMap<String, List<Models.OracleTask>>();
         days.put("20260102", Arrays.asList(task("20260102", "A", "R", 1000), task("20260102", "B", "R", 2000)));
         days.put("20260101", Arrays.asList(task("20260101", "A", "R", 500), task("20260101", "B", "R", 1500)));
         List<Models.RunRecord> runs = Arrays.asList(run("20260102", "A", 100, 1000), run("20260101", "A", 0, 500));
         Models.AnalysisResult result = analyze(days, runs, new ArrayList<Models.Dependency>(), "20260102", Arrays.asList("20260101"));
-        assertEquals("I", result.anchorMode);
-        assertEquals(100L * 1000L, result.targetStart.getTime());
-        assertEquals(400, result.completionDelaySeconds.longValue());
-        assertEquals(1600L * 1000L, result.expectedFinish.getTime());
+        assertEquals("R", result.anchorMode);
+        assertEquals(dateAt("20260102", 1000).getTime(), result.targetStart.getTime());
+        assertEquals(500, result.completionDelaySeconds.longValue());
+        assertEquals(dateAt("20260102", 2000).getTime(), result.expectedFinish.getTime());
     }
 
     @Test public void oneMissingIForcesRAlignmentForTheWholeComparison() {
@@ -280,9 +286,9 @@ public class PerformanceAnalyzerTest {
         List<Models.RunRecord> runs = Arrays.asList(run("20260102", "A", 100, 1000));
         Models.AnalysisResult result = analyze(days, runs, new ArrayList<Models.Dependency>(), "20260102", Arrays.asList("20260101"));
         assertEquals("R", result.anchorMode);
-        assertEquals(1000L * 1000L, result.targetStart.getTime());
-        assertEquals(0, result.completionDelaySeconds.longValue());
-        assertTrue(result.summary.contains("持平"));
+        assertEquals(dateAt("20260102", 1000).getTime(), result.targetStart.getTime());
+        assertEquals(500, result.completionDelaySeconds.longValue());
+        assertTrue(result.summary.contains("整体 delay"));
     }
 
     @Test public void recentAverageSwitchesAllDatesToRWhenOneBaselineLacksI() {
@@ -294,7 +300,7 @@ public class PerformanceAnalyzerTest {
         Models.AnalysisResult result = analyze(days, runs, new ArrayList<Models.Dependency>(), "20260103", Arrays.asList("20260102", "20260101"));
         assertEquals("R", result.anchorMode);
         assertEquals(1000, result.baselineDurationSeconds);
-        assertEquals(200, result.completionDelaySeconds.longValue());
+        assertEquals(700, result.completionDelaySeconds.longValue());
     }
 
     @Test public void rejectsFinishEarlierThanTheUnifiedStartAnchor() {
@@ -320,7 +326,7 @@ public class PerformanceAnalyzerTest {
         request.endThreadId = "T"; request.endLevelNo = "41"; request.endFabId = "B";
         Models.AnalysisResult result = PerformanceAnalyzer.analyze(request, days, new ArrayList<Models.RunRecord>(),
             Arrays.asList(new Models.Dependency("C", "A"), new Models.Dependency("B", "C")),
-            Arrays.asList("20260101"), new Date(5000L * 1000L));
+            Arrays.asList("20260101"), dateAt("20260102", 5000));
         assertEquals(2, result.rows.size());
         assertEquals(3, result.allRows.size());
         assertTrue(result.dependencyPathComplete);
@@ -337,14 +343,53 @@ public class PerformanceAnalyzerTest {
         assertTrue(result.summary.contains("完成时间无效"));
     }
 
-    @Test public void exactIAnchorUsesTheLastRestartedRunMatchingTheDatabaseR() {
+    @Test public void exactIRemainsAvailableForTaskAnalysisButNotBatchAnchor() {
         Map<String, List<Models.OracleTask>> days = new LinkedHashMap<String, List<Models.OracleTask>>();
         days.put("20260102", Arrays.asList(task("20260102", "A", "R", 1000), task("20260102", "B", "R", 2000)));
         days.put("20260101", Arrays.asList(task("20260101", "A", "R", 500), task("20260101", "B", "R", 1500)));
         List<Models.RunRecord> runs = Arrays.asList(run("20260102", "A", 100, 800), run("20260102", "A", 300, 1000), run("20260101", "A", 0, 500));
         Models.AnalysisResult result = analyze(days, runs, new ArrayList<Models.Dependency>(), "20260102", Arrays.asList("20260101"));
-        assertEquals("I", result.anchorMode);
-        assertEquals(300L * 1000L, result.targetStart.getTime());
+        assertEquals("R", result.anchorMode);
+        assertEquals(dateAt("20260102", 1000).getTime(), result.targetStart.getTime());
+        assertEquals(dateAt("20260102", 300).getTime(), find(result, "A").startedAt.getTime());
+    }
+
+    @Test public void overallDelayUsesFinishClockWhileExpectedFinishRemainsStartAligned() {
+        Map<String, List<Models.OracleTask>> days = new LinkedHashMap<String, List<Models.OracleTask>>();
+        days.put("20260102", Arrays.asList(task("20260102", "A", "R", 10 * 3600), task("20260102", "B", "R", 12 * 3600)));
+        days.put("20260101", Arrays.asList(task("20260101", "A", "R", 8 * 3600), task("20260101", "B", "R", 11 * 3600)));
+        Models.AnalysisResult result = analyze(days, new ArrayList<Models.RunRecord>(), new ArrayList<Models.Dependency>(),
+            "20260102", Arrays.asList("20260101"));
+        assertEquals(3600, result.completionDelaySeconds.longValue());
+        assertEquals(dateAt("20260102", 13 * 3600).getTime(), result.expectedFinish.getTime());
+        assertTrue(result.targetFinish.before(result.expectedFinish));
+        assertTrue(result.summary.contains("整体 delay 01:00:00"));
+        assertFalse(result.summary.contains("相对启动预期"));
+    }
+
+    @Test public void comparesCrossMidnightFinishAsHoursBeyondBusinessDate() {
+        Map<String, List<Models.OracleTask>> days = new LinkedHashMap<String, List<Models.OracleTask>>();
+        days.put("20260102", Arrays.asList(task("20260102", "A", "R", 22 * 3600), task("20260102", "B", "R", 26 * 3600)));
+        days.put("20260101", Arrays.asList(task("20260101", "A", "R", 21 * 3600), task("20260101", "B", "R", 25 * 3600)));
+        Models.AnalysisResult result = analyze(days, new ArrayList<Models.RunRecord>(), new ArrayList<Models.Dependency>(),
+            "20260102", Arrays.asList("20260101"));
+        assertEquals(Long.valueOf(26 * 3600L), result.targetBusinessCompletionOffsetSeconds);
+        assertEquals(25 * 3600L, result.baselineBusinessCompletionOffsetSeconds);
+        assertEquals(3600, result.completionDelaySeconds.longValue());
+        assertTrue(result.summary.contains("次日 02:00:00"));
+    }
+
+    @Test public void missingRealStartRStopsTheWholeAnalysis() {
+        Map<String, List<Models.OracleTask>> days = new LinkedHashMap<String, List<Models.OracleTask>>();
+        days.put("20260102", Arrays.asList(task("20260102", "A", "I", 1000), task("20260102", "B", "R", 2000)));
+        days.put("20260101", Arrays.asList(task("20260101", "A", "R", 500), task("20260101", "B", "R", 1500)));
+        try {
+            analyze(days, new ArrayList<Models.RunRecord>(), new ArrayList<Models.Dependency>(), "20260102", Arrays.asList("20260101"));
+            throw new AssertionError("Expected missing start R to stop analysis");
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage().contains("启动作业缺少真实 R 时间"));
+            assertTrue(expected.getMessage().contains("切换日期或启动作业"));
+        }
     }
 
     private static Models.AnalysisResult analyze(Map<String, List<Models.OracleTask>> days, List<Models.RunRecord> runs,
@@ -355,7 +400,7 @@ public class PerformanceAnalyzerTest {
         request.endFabId = contains(days.get(target), "ROOT") ? "ROOT" : contains(days.get(target), "B") ? "B" : "A";
         request.endLevelNo = levelOf(days.get(target), request.endFabId);
         if (baselines.size() > 1) { request.baselineMode = Models.AnalysisBaselineMode.RECENT_AVERAGE; request.recentDateCount = baselines.size(); }
-        return PerformanceAnalyzer.analyze(request, days, runs, edges, baselines, new Date(5000));
+        return PerformanceAnalyzer.analyze(request, days, runs, edges, baselines, dateAt(target, 5000));
     }
 
     private static boolean contains(List<Models.OracleTask> tasks, String fab) {
@@ -379,7 +424,7 @@ public class PerformanceAnalyzerTest {
 
     private static Models.OracleTask taskLevel(String date, String fab, String level, String status, long at) {
         Models.OracleTask task = new Models.OracleTask(); task.processDate = date; task.threadId = "T"; task.levelNo = level;
-        task.fabId = fab; task.status = status; task.actTime = new Date(at * 1000L); return task;
+        task.fabId = fab; task.status = status; task.actTime = dateAt(date, at); return task;
     }
 
     private static Models.OracleTask taskThread(String date, String thread, String fab, String status, long at) {
@@ -392,6 +437,12 @@ public class PerformanceAnalyzerTest {
 
     private static Models.RunRecord runLevel(String date, String fab, String level, long start, long finish) {
         Models.RunRecord run = new Models.RunRecord(); run.task = new Models.TaskKey(date, "T", level, fab);
-        run.startedAt = new Date(start * 1000L); run.completedAt = new Date(finish * 1000L); run.durationSeconds = finish - start; return run;
+        run.startedAt = dateAt(date, start); run.completedAt = dateAt(date, finish); run.durationSeconds = finish - start; return run;
+    }
+
+    private static Date dateAt(String processDate, long secondsFromBusinessDate) {
+        LocalDate date = LocalDate.parse(processDate, DateTimeFormatter.BASIC_ISO_DATE);
+        LocalDateTime value = date.atStartOfDay().plusSeconds(secondsFromBusinessDate);
+        return Date.from(value.atZone(ZoneId.systemDefault()).toInstant());
     }
 }

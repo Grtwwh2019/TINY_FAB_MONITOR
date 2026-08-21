@@ -120,7 +120,7 @@ final class AnalysisDagPanel extends JPanel {
         g.setColor(border); g.setStroke(new BasicStroke(metric.criticalPath ? 3f : 1.5f)); g.draw(new RoundRectangle2D.Double(node.x, node.y, WIDTH, HEIGHT, 14, 14));
         g.setFont(getFont().deriveFont(Font.BOLD, 12f)); g.setColor(new Color(30, 42, 55)); g.drawString(clip(metric.fabId, 24), node.x + 12, node.y + 22);
         g.setFont(getFont().deriveFont(11f)); g.setColor(border);
-        String delay = metric.completionDelaySeconds == null ? "无完成时间对比" : "完成延迟 " + signed(metric.completionDelaySeconds);
+        String delay = metric.completionDelaySeconds == null ? "无完成时间对比" : "任务完成偏移 " + signed(metric.completionDelaySeconds);
         g.drawString(delay, node.x + 12, node.y + 42);
         g.setColor(new Color(88, 101, 115)); g.drawString(clip(metric.reason, 25), node.x + 12, node.y + 57);
     }
@@ -150,7 +150,7 @@ final class AnalysisDagPanel extends JPanel {
             "\n基准就绪→R：" + nullableDuration(m.baselineReadyToCompleteSeconds) +
             "\nR 区间差：" + nullableSigned(m.readyToCompleteDeltaSeconds) +
             "\n执行差：" + nullableSigned(m.executionDeltaSeconds) + "\n等待差：" + nullableSigned(m.waitDeltaSeconds) +
-            "\n完成延迟：" + nullableSigned(m.completionDelaySeconds) +
+            "\n任务完成偏移差：" + nullableSigned(m.completionDelaySeconds) +
             "\n延迟贡献：" + UiFormat.duration(m.delayContributionSeconds) +
             (m.startBasis.isEmpty() ? "" : "\n估算依据：" + m.startBasis);
         JTextArea text = new JTextArea(textValue, 20, 56);

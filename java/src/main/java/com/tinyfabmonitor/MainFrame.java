@@ -539,7 +539,7 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
     private static class AnalysisTableModel extends AbstractTableModel {
         private final String[] columns = {"FAB ID", "FAB 描述", "Thread / Level", "分析类型", "当天完成时间", "基准完成时间",
             "当天依赖就绪", "基准依赖就绪", "当天就绪→R", "基准就绪→R", "R 区间差",
-            "当天执行", "基准执行", "执行差", "当天等待", "基准等待", "等待差", "完成延迟", "延迟贡献", "原因"};
+            "当天执行", "基准执行", "执行差", "当天等待", "基准等待", "等待差", "任务完成偏移差", "延迟贡献", "原因"};
         private List<Models.AnalysisTaskMetric> rows = new ArrayList<Models.AnalysisTaskMetric>();
         void setRows(List<Models.AnalysisTaskMetric> values) { rows = new ArrayList<Models.AnalysisTaskMetric>(values); fireTableDataChanged(); }
         Models.AnalysisTaskMetric rowAt(int row) { return rows.get(row); }

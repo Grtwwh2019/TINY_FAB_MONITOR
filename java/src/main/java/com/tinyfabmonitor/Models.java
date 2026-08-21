@@ -166,6 +166,9 @@ final class Models {
         long targetDurationSeconds;
         long baselineDurationSeconds;
         long overallDeltaSeconds;
+        Long targetBusinessCompletionOffsetSeconds;
+        long baselineBusinessCompletionOffsetSeconds;
+        Date baselineFinish;
         Date expectedFinish;
         Date predictedFinish;
         Long completionDelaySeconds;

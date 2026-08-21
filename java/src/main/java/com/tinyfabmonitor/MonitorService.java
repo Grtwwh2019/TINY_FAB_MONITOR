@@ -418,6 +418,8 @@ final class MonitorService implements AutoCloseable {
                     try {
                         List<Models.OracleTask> target = tasksForAnalysisDate(connection, request.analysisDate);
                         tasksByDate.put(request.analysisDate, target);
+                        String targetIssue = PerformanceAnalyzer.targetIssue(request, request.analysisDate, target, analysisRuns);
+                        if (targetIssue != null) throw new IllegalArgumentException(targetIssue);
                         if (request.baselineMode == Models.AnalysisBaselineMode.SPECIFIED_DATE) {
                             baselineDates = Collections.singletonList(request.specifiedBaselineDate);
                             List<Models.OracleTask> baseline = tasksForAnalysisDate(connection, request.specifiedBaselineDate);
@@ -435,8 +437,9 @@ final class MonitorService implements AutoCloseable {
                                     if (baselineDates.size() >= needed) break;
                                 } else if (rejected.size() < 3) rejected.add(date + "（" + issue + "）");
                             }
-                            if (baselineDates.isEmpty() && !rejected.isEmpty()) {
-                                throw new IllegalArgumentException("没有可用的基准日期；候选：" + String.join("；", rejected));
+                            if (baselineDates.size() < needed) {
+                                String detail = rejected.isEmpty() ? "没有读到足够的候选日期" : "候选：" + String.join("；", rejected);
+                                throw new IllegalArgumentException("可用基准日期不足，需要 " + needed + " 个，实际 " + baselineDates.size() + " 个；" + detail);
                             }
                         }
                         if (baselineDates.isEmpty()) throw new IllegalArgumentException("找不到结束基准任务已进入 R 的历史业务日期");

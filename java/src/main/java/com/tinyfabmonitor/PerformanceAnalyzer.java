@@ -11,6 +11,12 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 
 final class PerformanceAnalyzer {
     private static class TaskSnapshot {
@@ -39,6 +45,7 @@ final class PerformanceAnalyzer {
         Date start;
         Date finish;
         long durationSeconds;
+        long businessCompletionOffsetSeconds;
         boolean complete;
         String startBasis = "";
     }
@@ -62,6 +69,25 @@ final class PerformanceAnalyzer {
                                 List<Models.RunRecord> runs) {
         DaySnapshot day = snapshot(request, date, tasks, runs, Collections.<Models.Dependency>emptyList());
         return baselineRUnusableReason(day);
+    }
+
+    static String targetIssue(Models.AnalysisRequest request, String date, List<Models.OracleTask> tasks,
+                              List<Models.RunRecord> runs) {
+        DaySnapshot day = snapshot(request, date, tasks, runs, Collections.<Models.Dependency>emptyList());
+        if (day.startTask == null) return "分析日期找不到启动作业";
+        if (day.endTask == null) return "分析日期找不到结束作业";
+        if (groupKey(day.startTask.task).equals(groupKey(day.endTask.task))) return "启动作业和结束作业不能相同";
+        if (isLevel20(day.startTask.task)) return "Level 20 循环 Poll 作业不能作为批次启动作业";
+        if (isLevel20(day.endTask.task)) return "Level 20 循环 Poll 作业不能作为批次结束作业";
+        if (day.startTask.completedAt == null) {
+            String cause = day.startTask.task.actTimePlaceholder ? "R 时间是占位值" : "尚未进入 R 或没有有效 R 时间";
+            return "分析日期的启动作业缺少真实 R 时间（" + cause + "），请切换日期或启动作业";
+        }
+        if ("R".equalsIgnoreCase(day.endTask.task.status) && day.finish == null) {
+            return day.endTask.task.actTimePlaceholder ? "分析日期的结束作业 R 时间是占位值" : "分析日期的结束作业没有有效 R 时间";
+        }
+        if (day.finish != null && day.finish.before(day.startTask.completedAt)) return "分析日期的结束作业 R 时间早于启动作业 R 时间";
+        return null;
     }
 
     static Models.AnalysisResult analyze(Models.AnalysisRequest request,
@@ -94,32 +120,29 @@ final class PerformanceAnalyzer {
                 if (baselines.size() >= requiredBaselines) break;
             } else if (rejected.size() < 3) rejected.add(date + "（" + unusable + "）");
         }
-        if (baselines.isEmpty()) {
+        if (baselines.size() < requiredBaselines) {
             String detail = rejected.isEmpty() ? "没有读到候选日期任务" : "候选：" + join(rejected, "；");
-            throw new IllegalArgumentException("没有可用的基准日期；" + detail);
+            throw new IllegalArgumentException("可用基准日期不足，需要 " + requiredBaselines + " 个，实际 " + baselines.size() + " 个；" + detail);
         }
         result.baselineLabel = result.baselineDates.size() == 1 ? result.baselineDates.get(0) :
             "最近 " + result.baselineDates.size() + " 个结束任务已完成日期平均";
 
-        boolean useIAnchor = hasExactI(target.startTask);
-        for (DaySnapshot day : baselines) if (!hasExactI(day.startTask)) useIAnchor = false;
-        if (!useIAnchor) {
-            requireRAnchor(target, true);
-            for (DaySnapshot day : baselines) requireRAnchor(day, false);
-        }
-        applyAnchor(target, useIAnchor, true);
-        for (DaySnapshot day : baselines) applyAnchor(day, useIAnchor, false);
+        requireRAnchor(target, true);
+        for (DaySnapshot day : baselines) requireRAnchor(day, false);
+        applyRAnchor(target, true);
+        for (DaySnapshot day : baselines) applyRAnchor(day, false);
 
-        result.anchorMode = useIAnchor ? "I" : "R";
-        result.startBasis = useIAnchor ? "当天及全部基准日期统一使用启动作业真实 I" :
-            "至少一个日期缺少真实 I，当天及全部基准日期统一使用启动作业 R";
+        result.anchorMode = "R";
+        result.startBasis = "启动作业真实 R 仅用于批次耗时、应完成时间和慢点分析；整体 delay 只比较结束作业业务完成时刻";
         result.targetComplete = target.complete;
         result.targetEstimatedStart = false;
         result.targetStart = copy(target.start);
         result.targetFinish = copy(target.finish);
+        result.baselineFinish = baselines.size() == 1 ? copy(baselines.get(0).finish) : null;
         result.targetDurationSeconds = target.complete ? target.durationSeconds :
             Math.max(0L, (now.getTime() - target.start.getTime()) / 1000L);
         result.baselineDurationSeconds = averageDayDuration(baselines);
+        result.baselineBusinessCompletionOffsetSeconds = averageBusinessCompletionOffset(baselines);
         result.expectedFinish = new Date(target.start.getTime() + result.baselineDurationSeconds * 1000L);
 
         Set<String> critical = criticalPath(target, dependencies, request.startFabId, request.endFabId);
@@ -148,12 +171,14 @@ final class PerformanceAnalyzer {
         result.allRows.addAll(metrics);
         for (Models.AnalysisTaskMetric metric : metrics) if (includeMetric(metric, request)) result.rows.add(metric);
 
-        result.predictedFinish = target.complete ? target.finish :
+        boolean invalidCompletedTime = target.endTask != null && "R".equalsIgnoreCase(target.endTask.task.status) && target.finish == null;
+        result.predictedFinish = target.complete ? target.finish : invalidCompletedTime ? null :
             predictFinish(target, baselines, dependencies, runs, request.endFabId, now);
         Date comparedFinish = target.complete ? target.finish : result.predictedFinish;
         result.predictedDelay = !target.complete && comparedFinish != null;
         if (comparedFinish != null) {
-            result.completionDelaySeconds = (comparedFinish.getTime() - result.expectedFinish.getTime()) / 1000L;
+            result.targetBusinessCompletionOffsetSeconds = businessCompletionOffsetSeconds(request.analysisDate, comparedFinish);
+            result.completionDelaySeconds = result.targetBusinessCompletionOffsetSeconds - result.baselineBusinessCompletionOffsetSeconds;
             result.overallDeltaSeconds = result.completionDelaySeconds;
         }
         for (Models.AnalysisTaskMetric metric : result.rows) {
@@ -206,13 +231,14 @@ final class PerformanceAnalyzer {
         return day;
     }
 
-    private static void applyAnchor(DaySnapshot day, boolean useI, boolean target) {
-        day.start = copy(useI ? day.startTask.startedAt : day.startTask.completedAt);
-        day.startBasis = useI ? "启动作业 I 时间（精确）" : "启动作业 R 时间（统一对齐）";
-        if (day.start == null) throw new IllegalArgumentException(dayLabel(day, target) + "没有可用的启动作业 " + (useI ? "I" : "R") + " 时间");
+    private static void applyRAnchor(DaySnapshot day, boolean target) {
+        day.start = copy(day.startTask.completedAt);
+        day.startBasis = "启动作业 R 时间";
+        if (day.start == null) throw new IllegalArgumentException(dayLabel(day, target) + "没有可用的启动作业真实 R 时间");
         if (day.finish != null) {
             if (day.finish.before(day.start)) throw new IllegalArgumentException(dayLabel(day, target) + "的结束作业 R 时间早于启动锚点，数据或边界配置异常");
             day.durationSeconds = (day.finish.getTime() - day.start.getTime()) / 1000L;
+            day.businessCompletionOffsetSeconds = businessCompletionOffsetSeconds(day.date, day.finish);
         }
         for (TaskSnapshot task : day.byGroup.values()) {
             if (task.completedAt != null) task.completionOffsetSeconds = (task.completedAt.getTime() - day.start.getTime()) / 1000L;
@@ -224,17 +250,15 @@ final class PerformanceAnalyzer {
         if (day.endTask == null) throw new IllegalArgumentException("分析日期找不到结束作业");
         if (groupKey(day.startTask.task).equals(groupKey(day.endTask.task))) throw new IllegalArgumentException("启动作业和结束作业不能相同");
         if (isLevel20(day.endTask.task)) throw new IllegalArgumentException("Level 20 循环 Poll 作业不能作为批次结束作业");
-        if (isLevel20(day.startTask.task) && !hasExactI(day.startTask)) {
-            throw new IllegalArgumentException("分析日期的 Level 20 启动作业缺少真实 I，不能使用循环 Poll 的 R 作为批次锚点");
-        }
+        if (isLevel20(day.startTask.task)) throw new IllegalArgumentException("Level 20 循环 Poll 作业不能作为批次启动作业");
     }
 
     private static void requireRAnchor(DaySnapshot day, boolean target) {
         if (day.startTask == null) throw new IllegalArgumentException(dayLabel(day, target) + "找不到启动作业");
-        if (isLevel20(day.startTask.task)) throw new IllegalArgumentException(dayLabel(day, target) + "的 Level 20 启动作业不能使用循环 Poll 的 R 作为批次锚点");
+        if (isLevel20(day.startTask.task)) throw new IllegalArgumentException(dayLabel(day, target) + "的 Level 20 循环 Poll 作业不能作为批次启动作业");
         if (day.startTask.completedAt == null) {
             String cause = day.startTask.task.actTimePlaceholder ? "R 时间是占位值" : "尚未进入 R 或没有有效 R 时间";
-            throw new IllegalArgumentException(dayLabel(day, target) + "需要统一使用启动作业 R 对齐，但启动作业" + cause);
+            throw new IllegalArgumentException(dayLabel(day, target) + "的启动作业缺少真实 R 时间（" + cause + "），请切换日期或启动作业");
         }
     }
 
@@ -244,8 +268,9 @@ final class PerformanceAnalyzer {
         if (isLevel20(day.endTask.task)) return "Level 20 循环 Poll 作业不能作为批次结束作业";
         if (!"R".equalsIgnoreCase(day.endTask.task.status)) return "结束作业状态不是 R";
         if (day.finish == null) return day.endTask.task.actTimePlaceholder ? "结束作业 R 时间是占位值" : "结束作业没有有效 R 时间";
+        if (isLevel20(day.startTask.task)) return "Level 20 循环 Poll 作业不能作为批次启动作业";
         if (day.startTask.completedAt == null) return day.startTask.task.actTimePlaceholder ?
-            "启动作业 R 时间是占位值" : "启动作业没有有效 R 时间，无法保证统一 R 对齐";
+            "启动作业 R 时间是占位值" : "启动作业没有真实 R 时间";
         if (day.finish.before(day.startTask.completedAt)) return "结束作业 R 时间早于启动作业 R 时间";
         if (hasExactI(day.startTask) && day.finish.before(day.startTask.startedAt)) return "结束作业 R 时间早于启动作业 I 时间";
         return null;
@@ -423,28 +448,36 @@ final class PerformanceAnalyzer {
         long total = 0; for (DaySnapshot day : days) total += day.durationSeconds; return total / days.size();
     }
 
+    private static long averageBusinessCompletionOffset(List<DaySnapshot> days) {
+        long total = 0; for (DaySnapshot day : days) total += day.businessCompletionOffsetSeconds; return total / days.size();
+    }
+
     private static void buildSummary(Models.AnalysisResult result, DaySnapshot target) {
         Models.AnalysisTaskMetric bottleneck = result.rows.isEmpty() ? null : result.rows.get(0);
-        String verdict = result.completionDelaySeconds == null ? "暂时无法判断完成延迟" :
-            result.completionDelaySeconds > 0 ? (result.predictedDelay ? "预计延迟 " : "延迟 ") + UiFormat.duration(result.completionDelaySeconds) :
-            result.completionDelaySeconds < 0 ? (result.predictedDelay ? "预计提前 " : "提前 ") + UiFormat.duration(Math.abs(result.completionDelaySeconds)) :
+        String verdict = result.completionDelaySeconds == null ? "暂时无法判断整体完成时刻" :
+            result.completionDelaySeconds > 0 ? (result.predictedDelay ? "预计整体 delay " : "整体 delay ") + UiFormat.duration(result.completionDelaySeconds) :
+            result.completionDelaySeconds < 0 ? (result.predictedDelay ? "预计整体提前 " : "整体提前 ") + UiFormat.duration(Math.abs(result.completionDelaySeconds)) :
             (result.predictedDelay ? "预计持平" : "持平");
+        String baselineClock = businessClock(result.baselineBusinessCompletionOffsetSeconds);
         if (target.complete) {
             result.summary = result.analysisDate + " 实际完成 " + UiFormat.dateTime(result.targetFinish) +
-                "，应完成 " + UiFormat.dateTime(result.expectedFinish) + "，" + verdict;
+                "（业务完成时刻 " + businessClock(result.targetBusinessCompletionOffsetSeconds) + "），基准业务完成时刻 " +
+                baselineClock + "，" + verdict + "；启动对齐应完成时间 " + UiFormat.dateTime(result.expectedFinish);
         } else if (target.endTask != null && "R".equalsIgnoreCase(target.endTask.task.status)) {
-            result.summary = result.analysisDate + " 的结束作业状态为 R，但完成时间无效；应完成 " +
-                UiFormat.dateTime(result.expectedFinish) + "，无法判断实际延迟";
+            result.summary = result.analysisDate + " 的结束作业状态为 R，但完成时间无效；启动对齐应完成时间 " +
+                UiFormat.dateTime(result.expectedFinish) + "，无法判断整体完成时刻";
         } else if (result.predictedFinish != null) {
             result.summary = result.analysisDate + " 预计完成 " + UiFormat.dateTime(result.predictedFinish) +
-                "，应完成 " + UiFormat.dateTime(result.expectedFinish) + "，" + verdict;
+                "（预计业务完成时刻 " + businessClock(result.targetBusinessCompletionOffsetSeconds) + "），基准业务完成时刻 " +
+                baselineClock + "，" + verdict + "；启动对齐应完成时间 " + UiFormat.dateTime(result.expectedFinish);
         } else {
-            result.summary = result.analysisDate + " 的结束作业尚未完成，应完成 " + UiFormat.dateTime(result.expectedFinish) +
-                "，ETA 不可靠，暂时无法判断完成延迟";
+            result.summary = result.analysisDate + " 的结束作业尚未完成；启动对齐应完成时间 " + UiFormat.dateTime(result.expectedFinish) +
+                "，ETA 不可靠，暂时无法判断预计整体完成时刻";
         }
         result.detail = "区间：" + result.startTaskLabel + " → " + result.endTaskLabel +
-            "；对齐方式：启动作业 " + result.anchorMode + "；启动锚点：" + UiFormat.dateTime(result.targetStart) +
-            "；基准：" + result.baselineLabel + "（" + UiFormat.duration(result.baselineDurationSeconds) + "）" +
+            "；整体口径：只比较结束作业业务完成时刻；启动作业真实 R：" + UiFormat.dateTime(result.targetStart) +
+            "；基准：" + result.baselineLabel + "（基准批次耗时 " + UiFormat.duration(result.baselineDurationSeconds) +
+            "，业务完成时刻 " + baselineClock + "）" +
             (result.dependencyPathComplete ? "" : "；启动与结束作业在当前依赖数据中不连通，慢点路径可能不完整") +
             (bottleneck == null ? "。" : "；主要候选慢点：" + bottleneck.fabId + "（" + bottleneck.reason + "）。") +
             "精确 " + result.preciseCount + "，估算 " + result.estimatedCount + "，仅完成时间 " +
@@ -557,6 +590,23 @@ final class PerformanceAnalyzer {
     }
 
     private static Long difference(Long left, Long right) { return left == null || right == null ? null : left - right; }
+    private static long businessCompletionOffsetSeconds(String processDate, Date completion) {
+        try {
+            LocalDate businessDate = LocalDate.parse(processDate, DateTimeFormatter.BASIC_ISO_DATE);
+            LocalDateTime local = LocalDateTime.ofInstant(Instant.ofEpochMilli(completion.getTime()), ZoneId.systemDefault());
+            long dayOffset = ChronoUnit.DAYS.between(businessDate, local.toLocalDate());
+            return dayOffset * 86400L + local.toLocalTime().toSecondOfDay();
+        } catch (Exception e) {
+            throw new IllegalArgumentException("业务日期 " + processDate + " 无法用于完成时刻比较", e);
+        }
+    }
+    private static String businessClock(Long seconds) {
+        if (seconds == null) return "--";
+        long day = Math.floorDiv(seconds, 86400L), secondOfDay = Math.floorMod(seconds, 86400L);
+        long hour = secondOfDay / 3600L, minute = secondOfDay % 3600L / 60L, second = secondOfDay % 60L;
+        String prefix = day == 0 ? "" : day == 1 ? "次日 " : day == -1 ? "前一日 " : (day > 0 ? "+" + day + "日 " : day + "日 ");
+        return prefix + String.format(Locale.ROOT, "%02d:%02d:%02d", hour, minute, second);
+    }
     private static long eventTime(Models.RunRecord run) { if (run.completedAt != null) return run.completedAt.getTime(); if (run.startedAt != null) return run.startedAt.getTime(); return 0L; }
     private static long time(Date value) { return value == null ? Long.MIN_VALUE : value.getTime(); }
     private static Date copy(Date value) { return value == null ? null : new Date(value.getTime()); }
