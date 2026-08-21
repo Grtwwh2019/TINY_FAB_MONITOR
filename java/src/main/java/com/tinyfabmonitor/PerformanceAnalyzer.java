@@ -19,9 +19,13 @@ final class PerformanceAnalyzer {
         Date completedAt;
         Long executionSeconds;
         Long waitSeconds;
+        Date readinessAt;
+        Long readyToCompleteSeconds;
+        boolean readinessPartial;
         boolean estimatedStart;
         boolean estimatedWait;
         String startBasis = "";
+        int estimateSampleCount;
         int anomalyCount;
         long completionOffsetSeconds;
     }
@@ -43,10 +47,14 @@ final class PerformanceAnalyzer {
     private static class Averages {
         Long execution;
         Long wait;
+        Long readyToComplete;
         Long completionOffset;
         Date singleCompletedAt;
+        Date singleReadinessAt;
+        boolean readinessPartial;
         boolean executionEstimated;
         boolean waitEstimated;
+        int readyCount;
     }
 
     private PerformanceAnalyzer() {}
@@ -125,14 +133,14 @@ final class PerformanceAnalyzer {
             }
         });
 
-        result.predictedFinish = target.complete ? target.finish : predictFinish(target, dependencies, runs, request.endFabId, now);
+        result.predictedFinish = target.complete ? target.finish : predictFinish(target, baselines, dependencies, runs, request.endFabId, now);
         long comparedDuration = result.predictedFinish != null && target.start != null
             ? Math.max(0L, (result.predictedFinish.getTime() - target.start.getTime()) / 1000L) : result.targetDurationSeconds;
         result.overallDeltaSeconds = comparedDuration - result.baselineDurationSeconds;
         for (Models.AnalysisTaskMetric metric : result.rows) {
-            if ("精确分析".equals(metric.confidence)) result.preciseCount++;
-            else if ("估算分析".equals(metric.confidence)) result.estimatedCount++;
-            else if ("完成时间分析".equals(metric.confidence)) result.completionOnlyCount++;
+            if ("精确执行分析".equals(metric.confidence)) result.preciseCount++;
+            else if ("R 区间分析".equals(metric.confidence) || "历史辅助估算".equals(metric.confidence)) result.estimatedCount++;
+            else if ("仅完成时间分析".equals(metric.confidence)) result.completionOnlyCount++;
             else result.insufficientCount++;
         }
         buildSummary(result, target);
@@ -163,7 +171,10 @@ final class PerformanceAnalyzer {
             if (previous == null || time(value.completedAt) > time(previous.completedAt)) day.byFab.put(normalize(task.fabId), value);
         }
 
-        for (TaskSnapshot task : day.byGroup.values()) estimateMissingStart(task, day.byFab, dependencies, runs);
+        for (TaskSnapshot task : day.byGroup.values()) {
+            resolveReadiness(task, day.byFab, dependencies);
+            estimateMissingStart(task, runs);
+        }
 
         day.startTask = findTask(day, request.startThreadId, request.startLevelNo, request.startFabId);
         day.endTask = findTask(day, request.endThreadId, request.endLevelNo, request.endFabId);
@@ -175,9 +186,8 @@ final class PerformanceAnalyzer {
         for (TaskSnapshot task : day.byGroup.values()) {
             if (task.completedAt != null && day.start != null) task.completionOffsetSeconds = Math.max(0L, (task.completedAt.getTime() - day.start.getTime()) / 1000L);
             if (task.startedAt != null) {
-                Date predecessorFinish = latestPredecessorFinish(task.task.fabId, day.byFab, dependencies);
-                if (predecessorFinish != null) {
-                    task.waitSeconds = Math.max(0L, (task.startedAt.getTime() - predecessorFinish.getTime()) / 1000L);
+                if (task.readinessAt != null) {
+                    task.waitSeconds = Math.max(0L, (task.startedAt.getTime() - task.readinessAt.getTime()) / 1000L);
                     task.estimatedWait = task.estimatedStart;
                 }
             }
@@ -193,10 +203,13 @@ final class PerformanceAnalyzer {
             return;
         }
         if (startTask.completedAt == null) return;
-        Long average = historicalAverage(runs, startTask.task);
-        if (average != null) {
-            day.start = new Date(startTask.completedAt.getTime() - average * 1000L);
-            day.startBasis = "开始任务 R 时间减历史平均（估算）";
+        DurationTypical typical = historicalTypical(runs, startTask.task);
+        Date historicalStart = typical == null ? null : new Date(startTask.completedAt.getTime() - typical.seconds * 1000L);
+        if (historicalStart != null && (startTask.readinessAt == null || !historicalStart.before(startTask.readinessAt))) {
+            day.start = historicalStart;
+            day.startBasis = "开始任务 R 时间减历史执行典型值（" + typical.samples + "次，" + TimingStatistics.confidence(typical.samples) + "）";
+        } else if (isLevel20(startTask.task)) {
+            return;
         } else {
             day.start = copy(startTask.completedAt);
             day.startBasis = "开始任务仅有 R 时间（低精度估算）";
@@ -204,41 +217,58 @@ final class PerformanceAnalyzer {
         day.estimatedStart = true;
     }
 
-    private static void estimateMissingStart(TaskSnapshot task, Map<String, TaskSnapshot> byFab,
-                                             List<Models.Dependency> dependencies, List<Models.RunRecord> runs) {
+    private static void estimateMissingStart(TaskSnapshot task, List<Models.RunRecord> runs) {
         if (task.startedAt != null || task.completedAt == null) return;
-        Date predecessorFinish = latestPredecessorFinish(task.task.fabId, byFab, dependencies);
-        if (predecessorFinish != null && !predecessorFinish.after(task.completedAt)) {
-            Long averageWait = historicalWaitAverage(runs, task.task, dependencies);
-            Date estimated = predecessorFinish;
-            if (averageWait != null) {
-                Date withWait = new Date(predecessorFinish.getTime() + averageWait * 1000L);
-                if (!withWait.after(task.completedAt)) estimated = withWait;
-            }
-            task.startedAt = copy(estimated);
-            task.estimatedStart = true;
-            task.startBasis = averageWait == null || estimated.equals(predecessorFinish)
-                ? "直接上游最晚 R（依赖就绪时间估算）"
-                : "直接上游最晚 R + 历史平均等待（估算）";
-        } else {
-            Long average = historicalAverage(runs, task.task);
-            task.startedAt = average == null ? copy(task.completedAt) : new Date(task.completedAt.getTime() - average * 1000L);
-            task.estimatedStart = true;
-            task.startBasis = average == null ? "任务自身 R（低精度估算）" : "任务自身 R - 历史平均执行（估算）";
-        }
+        DurationTypical typical = historicalTypical(runs, task.task);
+        if (typical == null) return;
+        Date estimated = new Date(task.completedAt.getTime() - typical.seconds * 1000L);
+        if (estimated.after(task.completedAt) || (task.readinessAt != null && estimated.before(task.readinessAt))) return;
+        task.startedAt = estimated;
+        task.estimatedStart = true;
+        task.estimateSampleCount = typical.samples;
+        task.startBasis = "任务自身 R - 历史执行典型值（" + typical.samples + "次，" + TimingStatistics.confidence(typical.samples) + "）";
         task.executionSeconds = Math.max(0L, (task.completedAt.getTime() - task.startedAt.getTime()) / 1000L);
+    }
+
+    private static void resolveReadiness(TaskSnapshot task, Map<String, TaskSnapshot> byFab,
+                                         List<Models.Dependency> dependencies) {
+        if (task == null || isLevel20(task.task)) return;
+        boolean hasDependency = false, incomplete = false;
+        int eligible = 0;
+        Date latest = null;
+        for (Models.Dependency edge : dependencies) if (normalize(edge.fabId).equals(normalize(task.task.fabId))) {
+            hasDependency = true;
+            TaskSnapshot dependency = byFab.get(normalize(edge.dependencyId));
+            if (dependency != null && isLevel20(dependency.task)) { task.readinessPartial = true; continue; }
+            eligible++;
+            if (dependency == null || dependency.completedAt == null) { incomplete = true; continue; }
+            if (latest == null || dependency.completedAt.after(latest)) latest = dependency.completedAt;
+        }
+        if (hasDependency && eligible > 0 && !incomplete && latest != null) {
+            task.readinessAt = copy(latest);
+            if (task.completedAt != null && !latest.after(task.completedAt)) {
+                task.readyToCompleteSeconds = (task.completedAt.getTime() - latest.getTime()) / 1000L;
+            }
+        }
     }
 
     private static void requireBoundaryTasks(DaySnapshot day, boolean target) {
         if (day.startTask == null) throw new IllegalArgumentException((target ? "分析日期" : day.date) + "找不到开始基准任务");
         if (day.endTask == null) throw new IllegalArgumentException((target ? "分析日期" : day.date) + "找不到结束基准任务");
-        if (day.start == null) throw new IllegalArgumentException((target ? "分析日期" : day.date) + "的开始基准任务没有有效 I 或 R 时间");
+        if (day.start == null) {
+            if (day.startTask.completedAt != null && isLevel20(day.startTask.task)) {
+                throw new IllegalArgumentException((target ? "分析日期" : day.date) +
+                    "的 Level 20 开始任务缺少真实 I 和历史执行时长，不能使用循环 Poll 的 R 估算开始时间");
+            }
+            throw new IllegalArgumentException((target ? "分析日期" : day.date) + "的开始基准任务没有有效 I 或 R 时间");
+        }
     }
 
     private static String baselineUnusableReason(DaySnapshot day) {
         if (day.startTask == null) return "找不到开始任务";
         if (day.endTask == null) return "找不到结束任务";
-        if (day.start == null) return "开始任务没有有效 I/R 时间";
+        if (day.start == null) return day.startTask.completedAt != null && isLevel20(day.startTask.task)
+            ? "Level 20 开始任务缺少真实 I 和历史执行时长" : "开始任务没有有效 I/R 时间";
         if (!"R".equalsIgnoreCase(day.endTask.task.status)) return "结束任务状态不是 R";
         if (day.finish == null) return day.endTask.task.actTimePlaceholder ? "结束任务 R 时间是占位值" : "结束任务没有有效 R 时间";
         return null;
@@ -253,20 +283,40 @@ final class PerformanceAnalyzer {
         value.baselineCompletionAverage = baselineAverageMode;
         value.executionSeconds = task.executionSeconds; value.waitSeconds = task.waitSeconds; value.anomalyCount = task.anomalyCount;
         value.executionEstimated = task.estimatedStart; value.waitEstimated = task.estimatedWait; value.startBasis = task.startBasis;
+        value.estimateSampleCount = task.estimateSampleCount;
+        value.readinessAt = copy(task.readinessAt); value.readinessPartial = task.readinessPartial;
+        value.readyToCompleteSeconds = task.readyToCompleteSeconds;
         value.baselineExecutionSeconds = baseline.execution; value.baselineWaitSeconds = baseline.wait;
         value.baselineExecutionEstimated = baseline.executionEstimated; value.baselineWaitEstimated = baseline.waitEstimated;
         value.baselineCompletionOffsetSeconds = baseline.completionOffset;
+        value.baselineReadinessAt = copy(baseline.singleReadinessAt);
+        value.baselineReadinessPartial = baseline.readinessPartial;
+        value.baselineReadyToCompleteSeconds = baseline.readyToComplete;
         value.completionOffsetSeconds = task.completedAt == null ? null : task.completionOffsetSeconds;
         value.executionDeltaSeconds = difference(value.executionSeconds, value.baselineExecutionSeconds);
         value.waitDeltaSeconds = difference(value.waitSeconds, value.baselineWaitSeconds);
+        value.readyToCompleteDeltaSeconds = difference(value.readyToCompleteSeconds, value.baselineReadyToCompleteSeconds);
         value.completionDelaySeconds = difference(value.completionOffsetSeconds, value.baselineCompletionOffsetSeconds);
         return value;
     }
 
     private static void classify(Models.AnalysisTaskMetric value) {
-        if (value.executionDeltaSeconds != null) {
+        if (value.executionDeltaSeconds != null && !value.executionEstimated && !value.baselineExecutionEstimated) {
+            value.confidence = "精确执行分析";
+            long execution = value.executionDeltaSeconds;
+            long waiting = value.waitDeltaSeconds == null ? Long.MIN_VALUE : value.waitDeltaSeconds;
+            if (value.anomalyCount > 0 && execution > 0) value.reason = "异常后重新运行/执行耗时增加";
+            else if (waiting > 0 && waiting >= execution) value.reason = "等待调度时间增加";
+            else if (execution > 0) value.reason = "执行耗时增加";
+            else if (value.completionDelaySeconds != null && value.completionDelaySeconds > 0) value.reason = "上游延迟传递";
+            else value.reason = "与基准接近或更快";
+        } else if (value.readyToCompleteDeltaSeconds != null) {
+            value.confidence = "R 区间分析";
+            value.reason = value.readyToCompleteDeltaSeconds > 0 ? "依赖就绪到完成阶段增加" : "就绪到完成区间未变慢";
+            if (value.readinessPartial || value.baselineReadinessPartial) value.reason += "；Level 20 路径已截止，结果为部分可观测区间";
+        } else if (value.executionDeltaSeconds != null) {
             boolean estimated = value.executionEstimated || value.baselineExecutionEstimated || value.waitEstimated || value.baselineWaitEstimated;
-            value.confidence = estimated ? "估算分析" : "精确分析";
+            value.confidence = estimated ? "历史辅助估算" : "精确执行分析";
             long execution = value.executionDeltaSeconds;
             long waiting = value.waitDeltaSeconds == null ? Long.MIN_VALUE : value.waitDeltaSeconds;
             if (value.anomalyCount > 0 && execution > 0) value.reason = "异常后重新运行/执行耗时增加";
@@ -276,7 +326,7 @@ final class PerformanceAnalyzer {
             else value.reason = "与基准接近或更快";
             if (estimated && !value.startBasis.isEmpty()) value.reason += "；" + value.startBasis;
         } else if (value.completionDelaySeconds != null) {
-            value.confidence = "完成时间分析";
+            value.confidence = "仅完成时间分析";
             value.reason = value.completionDelaySeconds > 0 ? "完成阶段延迟，缺少I时间" : "完成时间未慢于基准";
         } else {
             value.confidence = "数据不足"; value.reason = "当天或基准缺少有效完成时间";
@@ -288,7 +338,12 @@ final class PerformanceAnalyzer {
                                                List<Models.Dependency> dependencies) {
         Map<String, List<String>> upstream = upstream(dependencies);
         for (Models.AnalysisTaskMetric row : rows) {
-            if (!row.criticalPath || row.completionDelaySeconds == null) continue;
+            if (!row.criticalPath) continue;
+            if (row.readyToCompleteDeltaSeconds != null) {
+                row.delayContributionSeconds = Math.max(0L, row.readyToCompleteDeltaSeconds);
+                continue;
+            }
+            if (row.completionDelaySeconds == null) continue;
             long prior = 0L;
             List<String> values = upstream.get(normalize(row.fabId));
             if (values != null) for (String id : values) {
@@ -311,7 +366,8 @@ final class PerformanceAnalyzer {
             List<String> values = upstream.get(id);
             if (values != null) for (String dependency : values) {
                 TaskSnapshot candidate = day.byFab.get(dependency);
-                if (candidate != null && candidate.completedAt != null && (latest == null || candidate.completedAt.after(latest.completedAt))) latest = candidate;
+                if (candidate != null && !isLevel20(candidate.task) && candidate.completedAt != null &&
+                    (latest == null || candidate.completedAt.after(latest.completedAt))) latest = candidate;
             }
             current = latest;
         }
@@ -319,62 +375,49 @@ final class PerformanceAnalyzer {
         return new LinkedHashSet<String>(order);
     }
 
-    private static Date predictFinish(DaySnapshot day, List<Models.Dependency> dependencies,
+    private static Date predictFinish(DaySnapshot day, List<DaySnapshot> baselines, List<Models.Dependency> dependencies,
                                       List<Models.RunRecord> runs, String endFabId, Date now) {
-        Map<String, Models.GroupStat> stats = MonitorService.buildGroupStats(runs);
         List<Models.TaskView> views = new ArrayList<Models.TaskView>();
         for (TaskSnapshot snapshot : day.byGroup.values()) {
             Models.TaskView view = new Models.TaskView();
             view.processDate = snapshot.task.processDate; view.threadId = snapshot.task.threadId; view.levelNo = snapshot.task.levelNo;
             view.fabId = snapshot.task.fabId; view.status = snapshot.task.status; view.actTime = copy(snapshot.task.actTime);
             view.actTimePlaceholder = snapshot.task.actTimePlaceholder; view.startedAt = copy(snapshot.startedAt);
-            Models.GroupStat stat = stats.get(snapshot.task.groupId());
-            if (stat != null) { view.averageDurationSeconds = stat.average; view.completedRunCount = stat.count; }
+            view.readinessAt = copy(snapshot.readinessAt); view.readyToCompleteSeconds = snapshot.readyToCompleteSeconds;
+            view.readinessPartial = snapshot.readinessPartial;
+            DurationTypical execution = historicalTypical(runs, snapshot.task);
+            if (execution != null) { view.executionTypicalSeconds = execution.seconds; view.executionTypicalSampleCount = execution.samples; }
+            Averages baseline = baselineAverage(snapshot.task, baselines);
+            if (baseline.readyToComplete != null) {
+                view.readyToCompleteTypicalSeconds = baseline.readyToComplete;
+                view.readyToCompleteSampleCount = baseline.readyCount;
+            }
             views.add(view);
         }
         Models.DagEta eta = EtaCalculator.calculate(endFabId, views, dependencies, now);
-        return eta.available ? eta.estimatedCompletion : null;
+        return eta.available && !eta.lowerBound ? eta.estimatedCompletion : null;
     }
 
     private static Averages baselineAverage(Models.TaskKey taskKey, List<DaySnapshot> days) {
-        long execution = 0, wait = 0, completion = 0; int ec = 0, wc = 0, cc = 0;
+        long execution = 0, wait = 0, ready = 0, completion = 0; int ec = 0, wc = 0, rc = 0, cc = 0;
         Averages value = new Averages();
         for (DaySnapshot day : days) {
             TaskSnapshot task = day.byGroup.get(groupKey(taskKey)); if (task == null) continue;
             if (task.executionSeconds != null) { execution += task.executionSeconds; ec++; }
             if (task.executionSeconds != null && task.estimatedStart) value.executionEstimated = true;
             if (task.waitSeconds != null) { wait += task.waitSeconds; wc++; if (task.estimatedWait) value.waitEstimated = true; }
+            if (task.readyToCompleteSeconds != null) { ready += task.readyToCompleteSeconds; rc++; if (task.readinessPartial) value.readinessPartial = true; }
             if (task.completedAt != null) { completion += task.completionOffsetSeconds; cc++; }
         }
         value.execution = ec == 0 ? null : execution / ec; value.wait = wc == 0 ? null : wait / wc;
+        value.readyToComplete = rc == 0 ? null : ready / rc;
+        value.readyCount = rc;
         value.completionOffset = cc == 0 ? null : completion / cc;
         if (days.size() == 1) {
             TaskSnapshot task = days.get(0).byGroup.get(groupKey(taskKey));
-            if (task != null) value.singleCompletedAt = copy(task.completedAt);
+            if (task != null) { value.singleCompletedAt = copy(task.completedAt); value.singleReadinessAt = copy(task.readinessAt); }
         }
         return value;
-    }
-
-    private static Long historicalWaitAverage(List<Models.RunRecord> runs, Models.TaskKey task,
-                                              List<Models.Dependency> dependencies) {
-        Set<String> predecessorFabs = new LinkedHashSet<String>();
-        for (Models.Dependency edge : dependencies) if (normalize(edge.fabId).equals(normalize(task.fabId))) predecessorFabs.add(normalize(edge.dependencyId));
-        if (predecessorFabs.isEmpty()) return null;
-        Map<String, Date> predecessorFinishByDate = new HashMap<String, Date>();
-        for (Models.RunRecord run : runs) {
-            if (run == null || run.task == null || run.completedAt == null || !predecessorFabs.contains(normalize(run.task.fabId))) continue;
-            Date previous = predecessorFinishByDate.get(run.task.processDate);
-            if (previous == null || run.completedAt.after(previous)) predecessorFinishByDate.put(run.task.processDate, run.completedAt);
-        }
-        long total = 0L; int count = 0;
-        for (Models.RunRecord run : runs) {
-            if (run == null || run.task == null || run.startedAt == null || !groupKey(run.task).equals(groupKey(task))) continue;
-            if (run.task.processDate != null && task.processDate != null && run.task.processDate.compareTo(task.processDate) >= 0) continue;
-            Date predecessorFinish = predecessorFinishByDate.get(run.task.processDate);
-            if (predecessorFinish == null || run.startedAt.before(predecessorFinish)) continue;
-            total += (run.startedAt.getTime() - predecessorFinish.getTime()) / 1000L; count++;
-        }
-        return count == 0 ? null : total / count;
     }
 
     private static long averageDayDuration(List<DaySnapshot> days) {
@@ -414,15 +457,20 @@ final class PerformanceAnalyzer {
         return result;
     }
 
-    private static Long historicalAverage(List<Models.RunRecord> runs, Models.TaskKey task) {
-        long total = 0L; int count = 0;
+    private static DurationTypical historicalTypical(List<Models.RunRecord> runs, Models.TaskKey task) {
+        List<Long> values = new ArrayList<Long>();
         for (Models.RunRecord run : runs) {
             if (run == null || run.task == null || run.startedAt == null || run.completedAt == null) continue;
             if (!groupKey(run.task).equals(groupKey(task))) continue;
             if (run.task.processDate != null && task.processDate != null && run.task.processDate.compareTo(task.processDate) >= 0) continue;
-            total += run.durationSeconds; count++;
+            if (run.durationSeconds >= 0) values.add(run.durationSeconds);
         }
-        return count == 0 ? null : total / count;
+        return values.isEmpty() ? null : new DurationTypical(TimingStatistics.median(values), values.size());
+    }
+
+    private static final class DurationTypical {
+        final long seconds; final int samples;
+        DurationTypical(long seconds, int samples) { this.seconds = seconds; this.samples = samples; }
     }
 
     private static TaskSnapshot findTask(DaySnapshot day, String thread, String level, String fab) {
@@ -430,15 +478,6 @@ final class PerformanceAnalyzer {
     }
 
     private static List<Models.OracleTask> latest(List<Models.OracleTask> tasks) { return MonitorService.selectLatestTasks(tasks); }
-
-    private static Date latestPredecessorFinish(String fabId, Map<String, TaskSnapshot> byFab, List<Models.Dependency> dependencies) {
-        Date latest = null;
-        for (Models.Dependency edge : dependencies) if (normalize(edge.fabId).equals(normalize(fabId))) {
-            TaskSnapshot task = byFab.get(normalize(edge.dependencyId));
-            if (task != null && task.completedAt != null && (latest == null || task.completedAt.after(latest))) latest = task.completedAt;
-        }
-        return latest;
-    }
 
     private static Map<String, List<String>> upstream(List<Models.Dependency> dependencies) {
         Map<String, List<String>> result = new HashMap<String, List<String>>();
@@ -455,6 +494,7 @@ final class PerformanceAnalyzer {
     private static long time(Date value) { return value == null ? Long.MIN_VALUE : value.getTime(); }
     private static Date copy(Date value) { return value == null ? null : new Date(value.getTime()); }
     private static String normalize(String value) { return value == null ? "" : value.trim().toUpperCase(Locale.ROOT); }
+    private static boolean isLevel20(Models.TaskKey task) { return task != null && "20".equals(normalize(task.levelNo)); }
     private static String groupKey(Models.TaskKey value) { return groupKey(value.threadId, value.levelNo, value.fabId); }
     private static String groupKey(String thread, String level, String fab) { return normalize(thread) + "|" + normalize(level) + "|" + normalize(fab); }
     private static String taskLabel(String thread, String level, String fab) { return thread + "/" + level + "/" + fab; }

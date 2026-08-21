@@ -374,6 +374,7 @@ final class MonitorService implements AutoCloseable {
         }
         Collections.sort(dashboard.recentRuns, (a, b) -> eventTime(b).compareTo(eventTime(a)));
         if (dashboard.recentRuns.size() > 200) dashboard.recentRuns = new ArrayList<Models.RunRecord>(dashboard.recentRuns.subList(0, 200));
+        TimingStatistics.apply(dashboard.tasks, state.tracked.values(), state.runs, dashboard.etaUpstreamDependencies);
         if (!dashboard.dagRootFabId.isEmpty() && !dashboard.dagLoading && dashboard.dagError.isEmpty()) {
             dashboard.dagEta = EtaCalculator.calculate(dashboard.dagRootFabId, dashboard.tasks, dashboard.etaUpstreamDependencies, now);
         }

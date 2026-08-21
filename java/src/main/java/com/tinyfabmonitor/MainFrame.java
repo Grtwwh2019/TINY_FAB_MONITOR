@@ -170,7 +170,7 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
         JTabbedPane tabs = new JTabbedPane();
         tabs.addTab("任务状态", taskTablePanel());
         JPanel dagContainer = new JPanel(new BorderLayout());
-        JLabel note = new JLabel("箭头方向：依赖任务 → 后续任务；鼠标滚轮缩放，按住拖动画布。");
+        JLabel note = new JLabel("箭头方向：依赖任务 → 后续任务；滚轮缩放、拖动画布，右键节点查看信息。");
         JPanel dagTop = new JPanel(new BorderLayout(10, 0)); dagTop.setBorder(new EmptyBorder(8, 10, 8, 10)); dagTop.add(note, BorderLayout.WEST);
         JPanel search = new JPanel(new FlowLayout(FlowLayout.RIGHT, 5, 0));
         search.add(new JLabel("Thread ID：")); search.add(dagThreadSearch);
@@ -469,7 +469,7 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
     private static JTable table(AbstractTableModel model) {
         JTable table = new JTable(model); table.setRowHeight(42); table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF); table.setFillsViewportHeight(true);
         int[] widths = model instanceof TaskTableModel ? new int[]{135, 220, 210, 65, 135, 135, 135, 155, 240}
-            : model instanceof AnalysisTableModel ? new int[]{135, 210, 145, 80, 155, 155, 115, 115, 115, 115, 115, 115, 115, 100, 230}
+            : model instanceof AnalysisTableModel ? new int[]{135, 210, 145, 115, 155, 155, 155, 155, 125, 125, 115, 115, 115, 115, 115, 115, 115, 115, 100, 260}
             : new int[]{95, 145, 220, 145, 135, 135, 125, 260};
         for (int i = 0; i < widths.length; i++) table.getColumnModel().getColumn(i).setPreferredWidth(widths[i]);
         TableCellClipboard.install(table);
@@ -537,7 +537,9 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
     }
 
     private static class AnalysisTableModel extends AbstractTableModel {
-        private final String[] columns = {"FAB ID", "FAB 描述", "Thread / Level", "精度", "当天完成时间", "基准完成时间", "当天执行", "基准执行", "执行差", "当天等待", "基准等待", "等待差", "完成偏移差", "延迟贡献", "原因"};
+        private final String[] columns = {"FAB ID", "FAB 描述", "Thread / Level", "分析类型", "当天完成时间", "基准完成时间",
+            "当天依赖就绪", "基准依赖就绪", "当天就绪→R", "基准就绪→R", "R 区间差",
+            "当天执行", "基准执行", "执行差", "当天等待", "基准等待", "等待差", "完成偏移差", "延迟贡献", "原因"};
         private List<Models.AnalysisTaskMetric> rows = new ArrayList<Models.AnalysisTaskMetric>();
         void setRows(List<Models.AnalysisTaskMetric> values) { rows = new ArrayList<Models.AnalysisTaskMetric>(values); fireTableDataChanged(); }
         Models.AnalysisTaskMetric rowAt(int row) { return rows.get(row); }
@@ -547,9 +549,11 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
             switch (column) {
                 case 0: return m.fabId; case 1: return m.fabDescription; case 2: return m.threadId + " / " + m.levelNo; case 3: return m.confidence;
                 case 4: return UiFormat.dateTime(m.completedAt); case 5: return baselineCompletion(m);
-                case 6: return duration(m.executionSeconds); case 7: return duration(m.baselineExecutionSeconds); case 8: return signed(m.executionDeltaSeconds);
-                case 9: return duration(m.waitSeconds); case 10: return duration(m.baselineWaitSeconds); case 11: return signed(m.waitDeltaSeconds);
-                case 12: return signed(m.completionDelaySeconds); case 13: return UiFormat.duration(m.delayContributionSeconds); default: return m.reason;
+                case 6: return UiFormat.dateTime(m.readinessAt); case 7: return UiFormat.dateTime(m.baselineReadinessAt);
+                case 8: return duration(m.readyToCompleteSeconds); case 9: return duration(m.baselineReadyToCompleteSeconds); case 10: return signed(m.readyToCompleteDeltaSeconds);
+                case 11: return duration(m.executionSeconds); case 12: return duration(m.baselineExecutionSeconds); case 13: return signed(m.executionDeltaSeconds);
+                case 14: return duration(m.waitSeconds); case 15: return duration(m.baselineWaitSeconds); case 16: return signed(m.waitDeltaSeconds);
+                case 17: return signed(m.completionDelaySeconds); case 18: return UiFormat.duration(m.delayContributionSeconds); default: return m.reason;
             }
         }
         private static String baselineCompletion(Models.AnalysisTaskMetric metric) {

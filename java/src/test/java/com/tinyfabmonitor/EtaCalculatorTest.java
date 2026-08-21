@@ -64,6 +64,16 @@ public class EtaCalculatorTest {
         assertFalse(cycle.available); assertTrue(cycle.detail.contains("循环依赖"));
     }
 
+    @Test public void level20DependencyProducesReferenceLowerBoundInsteadOfPointEta() {
+        Models.TaskView poll = task("POLL", "R", 1000L, false, 0, 0); poll.levelNo = "20";
+        Models.TaskView root = task("ROOT", "W", null, false, 60, 2); root.hasLevel20Upstream = true;
+        Models.DagEta eta = calculate("ROOT", Arrays.asList(poll, root), Arrays.asList(edge("ROOT", "POLL")));
+        assertTrue(eta.available);
+        assertTrue(eta.lowerBound);
+        assertTrue(eta.summary.contains("参考下限"));
+        assertTrue(eta.detail.contains("不是确定 ETA"));
+    }
+
     private static Models.DagEta calculate(String root, List<Models.TaskView> tasks, List<Models.Dependency> edges) {
         return EtaCalculator.calculate(root, tasks, edges, new Date(0));
     }
@@ -71,8 +81,11 @@ public class EtaCalculatorTest {
     private static Models.Dependency edge(String owner, String dependency) { return new Models.Dependency(owner, dependency); }
 
     private static Models.TaskView task(String fab, String status, Long actTime, boolean placeholder, long average, int count) {
-        Models.TaskView task = new Models.TaskView(); task.fabId = fab; task.status = status;
+        Models.TaskView task = new Models.TaskView(); task.fabId = fab; task.status = status; task.levelNo = "41";
         task.actTime = actTime == null ? null : new Date(actTime); task.actTimePlaceholder = placeholder;
-        task.averageDurationSeconds = average; task.completedRunCount = count; return task;
+        task.averageDurationSeconds = average; task.completedRunCount = count;
+        task.executionTypicalSeconds = average; task.executionTypicalSampleCount = count;
+        task.readyToCompleteTypicalSeconds = average; task.readyToCompleteSampleCount = count;
+        return task;
     }
 }

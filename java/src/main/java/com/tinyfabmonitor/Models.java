@@ -84,9 +84,12 @@ final class Models {
     static class DagEta {
         boolean available;
         boolean completed;
+        boolean lowerBound;
         boolean overdue;
         Date estimatedCompletion;
         long remainingSeconds;
+        int sampleCount;
+        String confidence = "";
         String summary = "";
         String detail = "";
         List<String> criticalPath = new ArrayList<String>();
@@ -127,6 +130,7 @@ final class Models {
         boolean baselineExecutionEstimated;
         boolean waitEstimated;
         boolean baselineWaitEstimated;
+        int estimateSampleCount;
         String startBasis = "";
         Long executionSeconds;
         Long baselineExecutionSeconds;
@@ -134,6 +138,13 @@ final class Models {
         Long waitSeconds;
         Long baselineWaitSeconds;
         Long waitDeltaSeconds;
+        Date readinessAt;
+        Date baselineReadinessAt;
+        boolean readinessPartial;
+        boolean baselineReadinessPartial;
+        Long readyToCompleteSeconds;
+        Long baselineReadyToCompleteSeconds;
+        Long readyToCompleteDeltaSeconds;
         Long completionOffsetSeconds;
         Long baselineCompletionOffsetSeconds;
         Long completionDelaySeconds;
@@ -184,6 +195,14 @@ final class Models {
         public long lastDurationSeconds;
         public long averageDurationSeconds;
         public int completedRunCount;
+        public long executionTypicalSeconds;
+        public int executionTypicalSampleCount;
+        public Date readinessAt;
+        public Long readyToCompleteSeconds;
+        public long readyToCompleteTypicalSeconds;
+        public int readyToCompleteSampleCount;
+        public boolean readinessPartial;
+        public boolean hasLevel20Upstream;
         public List<Date> anomalyTimes = new ArrayList<Date>();
     }
 

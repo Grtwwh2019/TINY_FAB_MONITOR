@@ -1,7 +1,11 @@
 package com.tinyfabmonitor;
 
+import javax.swing.JMenuItem;
+import javax.swing.JOptionPane;
 import javax.swing.JPanel;
-import javax.swing.ToolTipManager;
+import javax.swing.JPopupMenu;
+import javax.swing.JScrollPane;
+import javax.swing.JTextArea;
 import java.awt.BasicStroke;
 import java.awt.Color;
 import java.awt.Dimension;
@@ -9,6 +13,7 @@ import java.awt.Font;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
+import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.geom.Path2D;
 import java.awt.geom.RoundRectangle2D;
@@ -37,8 +42,10 @@ final class AnalysisDagPanel extends JPanel {
     AnalysisDagPanel() {
         setBackground(new Color(249, 251, 253));
         setPreferredSize(new Dimension(1000, 260));
-        ToolTipManager.sharedInstance().registerComponent(this);
-        PersistentNodeTooltip.install(this, this::hasNodeAt);
+        addMouseListener(new MouseAdapter() {
+            public void mousePressed(MouseEvent event) { showPopup(event); }
+            public void mouseReleased(MouseEvent event) { showPopup(event); }
+        });
     }
 
     void setCriticalOnly(boolean value) { criticalOnly = value; rebuild(); }
@@ -117,20 +124,37 @@ final class AnalysisDagPanel extends JPanel {
         g.setColor(new Color(88, 101, 115)); g.drawString(clip(metric.reason, 25), node.x + 12, node.y + 57);
     }
 
-    @Override public String getToolTipText(MouseEvent event) {
-        for (Node node : nodes.values()) if (event.getX() >= node.x && event.getX() <= node.x + WIDTH && event.getY() >= node.y && event.getY() <= node.y + HEIGHT) {
-            Models.AnalysisTaskMetric m = node.metric;
-            return "<html><b>FAB：</b>" + html(m.fabId) + "<br><b>描述：</b>" + html(m.fabDescription) +
-                "<br><b>分析精度：</b>" + html(m.confidence) + "<br><b>原因：</b>" + html(m.reason) +
-                "<br><b>执行差：</b>" + nullableSigned(m.executionDeltaSeconds) + "<br><b>等待差：</b>" + nullableSigned(m.waitDeltaSeconds) +
-                "<br><b>完成偏移差：</b>" + nullableSigned(m.completionDelaySeconds) + "</html>";
-        }
+    private void showPopup(MouseEvent event) {
+        if (!event.isPopupTrigger()) return;
+        Node node = nodeAt(event);
+        if (node == null) return;
+        JPopupMenu menu = new JPopupMenu();
+        JMenuItem details = new JMenuItem("查看分析详情");
+        details.addActionListener(e -> showDetails(node.metric));
+        menu.add(details); menu.show(this, event.getX(), event.getY());
+    }
+
+    private Node nodeAt(MouseEvent event) {
+        for (Node node : nodes.values()) if (event.getX() >= node.x && event.getX() <= node.x + WIDTH && event.getY() >= node.y && event.getY() <= node.y + HEIGHT) return node;
         return null;
     }
 
-    private boolean hasNodeAt(java.awt.Point point) {
-        for (Node node : nodes.values()) if (point.x >= node.x && point.x <= node.x + WIDTH && point.y >= node.y && point.y <= node.y + HEIGHT) return true;
-        return false;
+    private void showDetails(Models.AnalysisTaskMetric m) {
+        String textValue = "FAB：" + m.fabId + "\n描述：" + empty(m.fabDescription) + "\nThread / Level：" +
+            m.threadId + " / " + m.levelNo + "\n状态：" + m.status + "\n分析类型：" + m.confidence +
+            "\n原因：" + m.reason + "\n\n当天 R：" + UiFormat.dateTime(m.completedAt) +
+            "\n基准 R：" + UiFormat.dateTime(m.baselineCompletedAt) + "\n当天依赖就绪：" + UiFormat.dateTime(m.readinessAt) +
+            "\n基准依赖就绪：" + UiFormat.dateTime(m.baselineReadinessAt) +
+            "\n当天就绪→R：" + nullableDuration(m.readyToCompleteSeconds) +
+            "\n基准就绪→R：" + nullableDuration(m.baselineReadyToCompleteSeconds) +
+            "\nR 区间差：" + nullableSigned(m.readyToCompleteDeltaSeconds) +
+            "\n执行差：" + nullableSigned(m.executionDeltaSeconds) + "\n等待差：" + nullableSigned(m.waitDeltaSeconds) +
+            "\n完成偏移差：" + nullableSigned(m.completionDelaySeconds) +
+            "\n延迟贡献：" + UiFormat.duration(m.delayContributionSeconds) +
+            (m.startBasis.isEmpty() ? "" : "\n估算依据：" + m.startBasis);
+        JTextArea text = new JTextArea(textValue, 20, 56);
+        text.setEditable(false); text.setLineWrap(true); text.setWrapStyleWord(true); text.setCaretPosition(0);
+        JOptionPane.showMessageDialog(this, new JScrollPane(text), "耗时分析 - " + m.fabId, JOptionPane.INFORMATION_MESSAGE);
     }
 
     private static Color color(Models.AnalysisTaskMetric m) {
@@ -141,8 +165,9 @@ final class AnalysisDagPanel extends JPanel {
     }
     private static Color fill(Color value) { return new Color(Math.min(255, value.getRed() + 225) / 2 + 120, Math.min(255, value.getGreen() + 225) / 2 + 120, Math.min(255, value.getBlue() + 225) / 2 + 120); }
     private static String nullableSigned(Long value) { return value == null ? "--" : signed(value); }
+    private static String nullableDuration(Long value) { return value == null ? "--" : UiFormat.duration(value); }
     private static String signed(long seconds) { return (seconds >= 0 ? "+" : "-") + UiFormat.duration(Math.abs(seconds)); }
     private static String clip(String value, int length) { if (value == null) return ""; return value.length() <= length ? value : value.substring(0, length - 1) + "…"; }
-    private static String html(String value) { return value == null || value.isEmpty() ? "--" : value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"); }
+    private static String empty(String value) { return value == null || value.isEmpty() ? "--" : value; }
     private static String normalize(String value) { return value == null ? "" : value.trim().toUpperCase(Locale.ROOT); }
 }

@@ -1,9 +1,11 @@
 package com.tinyfabmonitor;
 
 import javax.swing.JMenuItem;
+import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JPopupMenu;
-import javax.swing.ToolTipManager;
+import javax.swing.JScrollPane;
+import javax.swing.JTextArea;
 import java.awt.BasicStroke;
 import java.awt.Color;
 import java.awt.Dimension;
@@ -52,6 +54,11 @@ final class DagPanel extends JPanel {
         boolean actTimePlaceholder;
         long currentDuration, lastDuration, average;
         int completedCount;
+        java.util.Date readinessAt;
+        Long readyToComplete;
+        long executionTypical, readyTypical;
+        int executionTypicalCount, readyTypicalCount;
+        boolean readinessPartial;
         String etaSummary = "", etaDetail = "";
         int x, y;
     }
@@ -59,8 +66,6 @@ final class DagPanel extends JPanel {
     DagPanel() {
         setBackground(new Color(249, 251, 253));
         setPreferredSize(new Dimension(1100, 570));
-        ToolTipManager.sharedInstance().registerComponent(this);
-        PersistentNodeTooltip.install(this, point -> nodeAt(point) != null);
         addMouseWheelListener(this::zoom);
         addMouseListener(new MouseAdapter() {
             public void mousePressed(MouseEvent event) {
@@ -159,6 +164,10 @@ final class DagPanel extends JPanel {
         node.actTime = task.actTime; node.actTimePlaceholder = task.actTimePlaceholder; node.startedAt = task.startedAt; node.completedAt = task.completedAt;
         node.currentDuration = task.currentDurationSeconds; node.lastDuration = task.lastDurationSeconds;
         node.average = task.averageDurationSeconds; node.completedCount = task.completedRunCount;
+        node.readinessAt = task.readinessAt; node.readyToComplete = task.readyToCompleteSeconds;
+        node.executionTypical = task.executionTypicalSeconds; node.executionTypicalCount = task.executionTypicalSampleCount;
+        node.readyTypical = task.readyToCompleteTypicalSeconds; node.readyTypicalCount = task.readyToCompleteSampleCount;
+        node.readinessPartial = task.readinessPartial;
         return node;
     }
 
@@ -236,30 +245,46 @@ final class DagPanel extends JPanel {
         g.setFont(getFont().deriveFont(10f)); g.setColor(new Color(92, 106, 120)); g.drawString(unfinished ? "未完成" : "已完成", node.x + 42, node.y + 47);
     }
 
-    @Override public String getToolTipText(MouseEvent event) {
-        Node node = nodeAt(event.getPoint());
-        if (node == null) return null;
+    private String taskDetails(Node node) {
         String statusTime = node.actTimePlaceholder ? "无有效时间" : UiFormat.dateTime(node.actTime);
         String duration = node.startedAt == null ? "--" : node.completedAt != null ? UiFormat.duration(node.lastDuration) : UiFormat.duration(node.currentDuration);
         String average = node.completedCount >= 1 ? UiFormat.duration(node.average) + "（" + node.completedCount + "次）" : "--（" + node.completedCount + "次）";
-        String eta = node.etaSummary.isEmpty() ? "" : "<br><b>预计完成：</b>" + html(node.etaSummary.replace("预计完成：", "")) +
-            (node.etaDetail.isEmpty() ? "" : "<br><b>估算依据：</b>" + html(node.etaDetail));
-        return "<html><b>FAB ID：</b>" + html(node.id) + "<br><b>描述：</b>" + html(empty(node.description)) +
-            "<br><b>Thread ID：</b>" + html(node.threadId) + "<br><b>Level No：</b>" + html(node.levelNo) +
-            "<br><b>状态：</b>" + html(node.status) + "<br><b>状态开始时间：</b>" + statusTime +
-            "<br><b>I 开始时间：</b>" + UiFormat.dateTime(node.startedAt) + "<br><b>当前/本次时长：</b>" + duration +
-            "<br><b>历史平均：</b>" + average + eta + "</html>";
+        String executionTypical = node.executionTypicalCount < 1 ? "--" : UiFormat.duration(node.executionTypical) +
+            "（" + node.executionTypicalCount + "次，" + TimingStatistics.confidence(node.executionTypicalCount) + "）";
+        String readyTypical = node.readyTypicalCount < 1 ? "--" : UiFormat.duration(node.readyTypical) +
+            "（" + node.readyTypicalCount + "次，" + TimingStatistics.confidence(node.readyTypicalCount) + "）";
+        return "FAB ID：" + node.id + "\n描述：" + empty(node.description) + "\nThread ID：" + node.threadId +
+            "\nLevel No：" + node.levelNo + "\n状态：" + node.status + "\n状态开始时间：" + statusTime +
+            "\n真实/记录 I：" + UiFormat.dateTime(node.startedAt) + "\n当前/本次时长：" + duration +
+            "\n历史平均：" + average + "\n依赖就绪时间：" + UiFormat.dateTime(node.readinessAt) +
+            "\n本次就绪到完成：" + (node.readyToComplete == null ? "--" : UiFormat.duration(node.readyToComplete)) +
+            "\n历史 I→R 典型值：" + executionTypical + "\n历史就绪→R 典型值：" + readyTypical +
+            (node.readinessPartial ? "\n注意：Level 20 路径已截止，依赖就绪信息仅部分可观测。" : "") +
+            (node.etaSummary.isEmpty() ? "" : "\n\n" + node.etaSummary + "\n" + node.etaDetail);
     }
 
     private boolean showPopup(MouseEvent event) {
         if (!event.isPopupTrigger()) return false;
         Node node = nodeAt(event.getPoint());
-        if (node == null || showDagAction == null) return false;
+        if (node == null) return false;
         JPopupMenu menu = new JPopupMenu();
-        JMenuItem item = new JMenuItem("展示此 FAB 的依赖 DAG");
-        item.addActionListener(e -> showDagAction.accept(node.id));
-        menu.add(item); menu.show(this, event.getX(), event.getY());
+        JMenuItem details = new JMenuItem("查看任务信息");
+        details.addActionListener(e -> showTaskDetails(node));
+        menu.add(details);
+        if (showDagAction != null) {
+            menu.addSeparator();
+            JMenuItem item = new JMenuItem("展示此 FAB 的依赖 DAG");
+            item.addActionListener(e -> showDagAction.accept(node.id));
+            menu.add(item);
+        }
+        menu.show(this, event.getX(), event.getY());
         return true;
+    }
+
+    private void showTaskDetails(Node node) {
+        JTextArea text = new JTextArea(taskDetails(node), 18, 56);
+        text.setEditable(false); text.setLineWrap(true); text.setWrapStyleWord(true); text.setCaretPosition(0);
+        JOptionPane.showMessageDialog(this, new JScrollPane(text), "任务信息 - " + node.id, JOptionPane.INFORMATION_MESSAGE);
     }
 
     private Node nodeAt(Point point) {
@@ -294,5 +319,4 @@ final class DagPanel extends JPanel {
     private static String normalize(String value) { return value == null ? "" : value.trim().toUpperCase(Locale.ROOT); }
     private static String clip(String value, int length) { return value == null ? "" : value.length() <= length ? value : value.substring(0, length - 1) + "…"; }
     private static String empty(String value) { return value == null || value.isEmpty() ? "--" : value; }
-    private static String html(String value) { return empty(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"); }
 }

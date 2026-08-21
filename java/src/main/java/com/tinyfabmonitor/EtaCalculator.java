@@ -13,7 +13,10 @@ import java.util.Set;
 final class EtaCalculator {
     private static class Estimate {
         boolean available;
+        boolean lowerBound;
+        boolean level20Cutoff;
         long finishMillis;
+        int sampleCount;
         String reason = "";
         List<String> path = new ArrayList<String>();
     }
@@ -34,7 +37,7 @@ final class EtaCalculator {
                 result.detail = "中心 FAB 已进入 R，显示数据库实际完成时间。";
             } else {
                 result.summary = "已完成，但数据库未提供有效完成时间";
-                result.detail = "中心 FAB 状态为 R，act_tm 为占位值；ETA 计算中仍视为已完成。";
+                result.detail = "中心 FAB 状态为 R，act_tm 为占位值；不使用占位时间生成 ETA。";
             }
             return result;
         }
@@ -45,62 +48,95 @@ final class EtaCalculator {
         }
 
         Map<String, List<String>> dependencies = adjacency(upstreamEdges);
-        Estimate estimate = estimate(root.fabId, tasksByFab, dependencies,
-            new HashMap<String, Estimate>(), new LinkedHashSet<String>());
+        Estimate estimate = estimate(root.fabId, true, tasksByFab, dependencies,
+            new HashMap<String, Estimate>(), new LinkedHashSet<String>(), now.getTime());
         if (!estimate.available) {
-            result.summary = "预计完成：无法估算";
+            result.summary = "预计完成：无法可靠估算";
             result.detail = estimate.reason;
             return result;
         }
 
         result.available = true;
+        result.lowerBound = estimate.lowerBound;
         result.estimatedCompletion = new Date(estimate.finishMillis);
         result.remainingSeconds = (estimate.finishMillis - now.getTime()) / 1000L;
         result.overdue = result.remainingSeconds < 0;
         result.criticalPath = estimate.path;
-        result.summary = "预计完成：" + UiFormat.dateTime(result.estimatedCompletion) +
-            (result.overdue ? "（可能已超时 " + UiFormat.duration(Math.abs(result.remainingSeconds)) + "）"
-                : "（预计剩余 " + UiFormat.duration(result.remainingSeconds) + "）");
-        result.detail = "关键路径：" + joinPath(estimate.path);
+        result.sampleCount = estimate.sampleCount;
+        result.confidence = TimingStatistics.confidence(estimate.sampleCount);
+        if (estimate.lowerBound) {
+            result.summary = "已知路径参考下限：" + UiFormat.dateTime(result.estimatedCompletion);
+        } else {
+            result.summary = "预计完成：" + UiFormat.dateTime(result.estimatedCompletion) +
+                (result.overdue ? "（可能已超时 " + UiFormat.duration(Math.abs(result.remainingSeconds)) + "）"
+                    : "（预计剩余 " + UiFormat.duration(result.remainingSeconds) + "）");
+        }
+        result.detail = "关键路径：" + joinPath(estimate.path) + "；依据：" + estimate.reason +
+            "；历史样本：" + estimate.sampleCount + "；" + result.confidence +
+            (estimate.lowerBound ? "；Level 20 路径时间未知，本结果不是确定 ETA。" : "");
         return result;
     }
 
-    private static Estimate estimate(String fabId, Map<String, Models.TaskView> tasksByFab,
+    private static Estimate estimate(String fabId, boolean root, Map<String, Models.TaskView> tasksByFab,
                                      Map<String, List<String>> dependencies, Map<String, Estimate> memo,
-                                     Set<String> visiting) {
+                                     Set<String> visiting, long nowMillis) {
         String key = normalize(fabId);
         Estimate cached = memo.get(key);
         if (cached != null) return cached;
         Estimate result = new Estimate();
         Models.TaskView task = tasksByFab.get(key);
         if (task == null) return unavailable(result, "依赖 FAB " + fabId + " 不属于当前业务日期");
+        if (!root && isLevel20(task)) {
+            result.level20Cutoff = true;
+            result.reason = "路径在 Level 20 FAB " + task.fabId + " 截止";
+            return result;
+        }
         if (!visiting.add(key)) return unavailable(result, "发现循环依赖，涉及 FAB " + task.fabId);
         try {
-            String status = task.status == null ? "" : task.status.trim().toUpperCase(Locale.ROOT);
+            String status = normalize(task.status);
             if ("R".equals(status) && validActTime(task)) {
                 result.available = true; result.finishMillis = task.actTime.getTime(); result.path.add(task.fabId);
-            } else if ("I".equals(status)) {
-                if (task.completedRunCount < 1) return unavailable(result, "FAB " + task.fabId + " 没有完整 I→R 历史记录");
-                Date start = task.startedAt != null ? task.startedAt : validActTime(task) ? task.actTime : null;
-                if (start == null) return unavailable(result, "FAB " + task.fabId + " 的 I 开始时间无效");
-                result.available = true; result.finishMillis = start.getTime() + task.averageDurationSeconds * 1000L; result.path.add(task.fabId);
+                result.reason = "数据库真实 R";
+            } else if ("I".equals(status) && validIStart(task)) {
+                if (task.executionTypicalSampleCount < 1) {
+                    return unavailable(result, "FAB " + task.fabId + " 已进入 I，但没有完整 I→R 历史记录");
+                }
+                Date start = task.startedAt != null ? task.startedAt : task.actTime;
+                result.available = true;
+                result.finishMillis = start.getTime() + task.executionTypicalSeconds * 1000L;
+                result.sampleCount = task.executionTypicalSampleCount;
+                result.path.add(task.fabId);
+                result.reason = "真实 I + 历史 I→R 典型值";
             } else if ("E".equals(status) || "B".equals(status)) {
                 return unavailable(result, "路径被 FAB " + task.fabId + " 的状态 " + status + " 阻塞");
-            } else if ("W".equals(status) || "R".equals(status)) {
-                if (task.completedRunCount < 1) return unavailable(result, "FAB " + task.fabId + " 没有完整 I→R 历史记录");
+            } else if ("W".equals(status) || "R".equals(status) || "I".equals(status)) {
+                if (root && isLevel20(task)) {
+                    return unavailable(result, "中心 Level 20 FAB " + task.fabId + " 缺少有效真实 I，不能使用循环 Poll 的 R 推算");
+                }
+                if (task.readyToCompleteSampleCount < 1) {
+                    return unavailable(result, "FAB " + task.fabId + " 没有可靠的历史“依赖就绪→R”样本");
+                }
                 List<String> upstream = dependencies.get(key);
                 if (upstream == null || upstream.isEmpty()) {
-                    return unavailable(result, "FAB " + task.fabId + ("R".equals(status) ? " 的 R 时间为占位值，且向上找不到有效时间起点" : " 向上找不到有效 R/I 时间起点"));
+                    return unavailable(result, "FAB " + task.fabId + " 向上找不到有效依赖完成时间起点");
                 }
                 Estimate latest = null;
+                boolean cutoff = task.hasLevel20Upstream || task.readinessPartial;
                 for (String dependency : upstream) {
-                    Estimate candidate = estimate(dependency, tasksByFab, dependencies, memo, visiting);
+                    Estimate candidate = estimate(dependency, false, tasksByFab, dependencies, memo, visiting, nowMillis);
+                    if (candidate.level20Cutoff) { cutoff = true; continue; }
                     if (!candidate.available) return unavailable(result, candidate.reason);
                     if (latest == null || candidate.finishMillis > latest.finishMillis) latest = candidate;
                 }
+                if (latest == null && !cutoff) return unavailable(result, "FAB " + task.fabId + " 没有可用的上游完成时间");
+                long readiness = latest == null ? nowMillis : latest.finishMillis;
                 result.available = true;
-                result.finishMillis = latest.finishMillis + task.averageDurationSeconds * 1000L;
-                result.path.addAll(latest.path); result.path.add(task.fabId);
+                result.lowerBound = cutoff || (latest != null && latest.lowerBound);
+                result.finishMillis = readiness + task.readyToCompleteTypicalSeconds * 1000L;
+                result.sampleCount = combineSamples(latest == null ? 0 : latest.sampleCount, task.readyToCompleteSampleCount);
+                if (latest != null) result.path.addAll(latest.path);
+                result.path.add(task.fabId);
+                result.reason = "历史“依赖就绪→R”典型值";
             } else {
                 return unavailable(result, "FAB " + task.fabId + " 的状态 " + status + " 不支持 ETA 计算");
             }
@@ -109,9 +145,18 @@ final class EtaCalculator {
         return result;
     }
 
-    private static Estimate unavailable(Estimate value, String reason) { value.reason = reason; return value; }
+    private static int combineSamples(int upstream, int current) {
+        if (upstream < 1) return current;
+        if (current < 1) return upstream;
+        return Math.min(upstream, current);
+    }
 
+    private static Estimate unavailable(Estimate value, String reason) { value.reason = reason; return value; }
     private static boolean validActTime(Models.TaskView task) { return task.actTime != null && !task.actTimePlaceholder; }
+    private static boolean validIStart(Models.TaskView task) {
+        return task.startedAt != null || ("I".equalsIgnoreCase(task.status) && validActTime(task));
+    }
+    private static boolean isLevel20(Models.TaskKey task) { return task != null && "20".equals(normalize(task.levelNo)); }
 
     private static Map<String, List<String>> adjacency(List<Models.Dependency> edges) {
         Map<String, List<String>> result = new LinkedHashMap<String, List<String>>();
@@ -139,7 +184,7 @@ final class EtaCalculator {
     private static String joinPath(List<String> path) {
         StringBuilder value = new StringBuilder();
         for (String id : path) { if (value.length() > 0) value.append(" → "); value.append(id); }
-        return value.toString();
+        return value.length() == 0 ? "仅有 Level 20 截止路径" : value.toString();
     }
 
     private static String normalize(String value) { return value == null ? "" : value.trim().toUpperCase(Locale.ROOT); }

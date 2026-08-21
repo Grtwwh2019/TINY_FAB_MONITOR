@@ -4,6 +4,7 @@ import org.junit.Test;
 
 import java.util.Arrays;
 import java.util.List;
+import java.awt.event.MouseEvent;
 import javax.swing.JTable;
 import javax.swing.table.DefaultTableModel;
 
@@ -78,6 +79,13 @@ public class MainFrameTest {
         table.changeSelection(1, 0, false, false);
         assertTrue(table.getCellSelectionEnabled());
         assertEquals("C", TableCellClipboard.selectedCellText(table));
+    }
+
+    @Test public void dagNodesNoLongerExposeHoverTooltips() {
+        DagPanel dag = new DagPanel();
+        AnalysisDagPanel analysis = new AnalysisDagPanel();
+        assertEquals(null, dag.getToolTipText(new MouseEvent(dag, MouseEvent.MOUSE_MOVED, 0, 0, 10, 10, 0, false)));
+        assertEquals(null, analysis.getToolTipText(new MouseEvent(analysis, MouseEvent.MOUSE_MOVED, 0, 0, 10, 10, 0, false)));
     }
 
     private static void assertInvalid(Runnable action) {
