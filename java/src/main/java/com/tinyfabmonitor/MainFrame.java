@@ -199,8 +199,8 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
         analysisRun.addActionListener(e -> startAnalysis());
         analysisBaselineMode.addActionListener(e -> updateAnalysisControls());
         JPanel boundaries = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-        boundaries.add(new JLabel("开始任务  Thread：")); boundaries.add(analysisStartThread); boundaries.add(new JLabel("Level：")); boundaries.add(analysisStartLevel);
-        boundaries.add(new JLabel("FAB：")); boundaries.add(analysisStartFab); boundaries.add(new JLabel("  →  结束任务  Thread：")); boundaries.add(analysisEndThread);
+        boundaries.add(new JLabel("批次启动作业  Thread：")); boundaries.add(analysisStartThread); boundaries.add(new JLabel("Level：")); boundaries.add(analysisStartLevel);
+        boundaries.add(new JLabel("FAB：")); boundaries.add(analysisStartFab); boundaries.add(new JLabel("  →  批次结束作业  Thread：")); boundaries.add(analysisEndThread);
         boundaries.add(new JLabel("Level：")); boundaries.add(analysisEndLevel); boundaries.add(new JLabel("FAB：")); boundaries.add(analysisEndFab);
         JPanel inputRows = new JPanel(new GridLayout(2, 1, 0, 4)); inputRows.add(controls); inputRows.add(boundaries);
         JPanel header = new JPanel(new BorderLayout(0, 6)); header.add(inputRows, BorderLayout.NORTH);
@@ -539,7 +539,7 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
     private static class AnalysisTableModel extends AbstractTableModel {
         private final String[] columns = {"FAB ID", "FAB 描述", "Thread / Level", "分析类型", "当天完成时间", "基准完成时间",
             "当天依赖就绪", "基准依赖就绪", "当天就绪→R", "基准就绪→R", "R 区间差",
-            "当天执行", "基准执行", "执行差", "当天等待", "基准等待", "等待差", "完成偏移差", "延迟贡献", "原因"};
+            "当天执行", "基准执行", "执行差", "当天等待", "基准等待", "等待差", "任务完成偏移差", "延迟贡献", "原因"};
         private List<Models.AnalysisTaskMetric> rows = new ArrayList<Models.AnalysisTaskMetric>();
         void setRows(List<Models.AnalysisTaskMetric> values) { rows = new ArrayList<Models.AnalysisTaskMetric>(values); fireTableDataChanged(); }
         Models.AnalysisTaskMetric rowAt(int row) { return rows.get(row); }
@@ -557,7 +557,7 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
             }
         }
         private static String baselineCompletion(Models.AnalysisTaskMetric metric) {
-            if (metric.baselineCompletionAverage) return metric.baselineCompletionOffsetSeconds == null ? "--" : "平均偏移 " + UiFormat.duration(metric.baselineCompletionOffsetSeconds);
+            if (metric.baselineCompletionAverage) return metric.baselineCompletionOffsetSeconds == null ? "--" : "平均完成偏移 " + signed(metric.baselineCompletionOffsetSeconds);
             return UiFormat.dateTime(metric.baselineCompletedAt);
         }
         private static String duration(Long seconds) { return seconds == null ? "--" : UiFormat.duration(seconds); }

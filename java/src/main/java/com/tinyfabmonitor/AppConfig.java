@@ -73,8 +73,8 @@ final class AppConfig {
         analysisEndThreadId = trim(p.getProperty("monitor.analysis_end_thread_id"));
         analysisEndLevelNo = trim(p.getProperty("monitor.analysis_end_level_no"));
         analysisEndFabId = trim(p.getProperty("monitor.analysis_end_fab_id"));
-        validateOptionalTask("开始基准任务", analysisStartThreadId, analysisStartLevelNo, analysisStartFabId);
-        validateOptionalTask("结束基准任务", analysisEndThreadId, analysisEndLevelNo, analysisEndFabId);
+        validateOptionalTask("批次启动作业", analysisStartThreadId, analysisStartLevelNo, analysisStartFabId);
+        validateOptionalTask("批次结束作业", analysisEndThreadId, analysisEndLevelNo, analysisEndFabId);
         String storage = trim(p.getProperty("storage.directory"));
         if (storage.isEmpty()) storage = "data";
         Path configured = java.nio.file.Paths.get(storage);
