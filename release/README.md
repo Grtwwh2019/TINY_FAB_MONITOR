@@ -4,14 +4,18 @@
 
 `TINY_FAB_MONITOR-Java8-Windows-x64.zip` 包含 Fat JAR、中文说明和可直接修改的示例 `config.properties`。
 
+本版耗时分析只用指定结束作业在各自业务日期中的 R 完成时刻判断整体 delay；启动作业真实 R 用于有效性校验、启动对齐应完成时间、ETA 和慢点分析，但不会改变整体结论。
+
+慢点分析会递归定位决定依赖就绪时刻的前置任务，并使用本地真实 I→R 区间区分“等待前置依赖”“同 Thread 其他 Level 占用”“自身执行变慢”和异常重跑。并列依赖与多个阻塞任务都会保留，阻塞总时长按区间并集计算。分析页提供中文指标说明、列标题提示及可复制的右键详情。
+
 SHA-256：
 
 ```text
 TinyFabMonitor.jar
-80ac91d0bfe7b8063d9658eddfdd05f5c74bae5d89adf4ab75ed8a0bdd0a5a03
+33a11691a9d26c3a72fa9583ab6d45dfc332cb06d8473eefb41cf99cf45f7552
 
 TINY_FAB_MONITOR-Java8-Windows-x64.zip
-ab83fb178258ae544c0b3082176398a5f90b1009a20ccdfad7bc2190b652b4b2
+4ef62e597688e9a55fdac520c8f7f01bfafc4635d2032efe834e399ae8eee8aa
 ```
 
 下载 JAR 后，将 `java/config.example.properties` 复制为同目录的 `config.properties`，填写实际连接信息和表名，然后运行：

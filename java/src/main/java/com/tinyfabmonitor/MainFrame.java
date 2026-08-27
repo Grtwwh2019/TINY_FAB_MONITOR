@@ -13,6 +13,7 @@ import javax.swing.JSplitPane;
 import javax.swing.JTabbedPane;
 import javax.swing.JTable;
 import javax.swing.JTextField;
+import javax.swing.JTextArea;
 import javax.swing.RowFilter;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
@@ -31,6 +32,8 @@ import java.awt.Font;
 import java.awt.GridLayout;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -120,6 +123,7 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
         historyTable.setRowSorter(historySorter);
         taskTable.setDefaultRenderer(Object.class, new StatusRenderer());
         analysisTable.setDefaultRenderer(Object.class, new AnalysisRenderer());
+        installAnalysisHelp();
         monitor.addListener(this);
         new Timer(1000, e -> render(monitor.dashboard())).start();
     }
@@ -195,12 +199,13 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
         controls.add(new JLabel("指定日期：")); controls.add(analysisBaselineDate); controls.add(new JLabel("平均天数：")); controls.add(analysisRecentCount);
         controls.add(new JLabel("Thread：")); controls.add(analysisThread); controls.add(new JLabel("Level：")); controls.add(analysisLevelMin);
         controls.add(new JLabel("至")); controls.add(analysisLevelMax); controls.add(analysisRun);
+        JButton help = new JButton("指标说明"); help.addActionListener(e -> showTextDialog("耗时分析指标说明", AnalysisUiText.help(), 28, 78)); controls.add(help);
         analysisCriticalOnly.setOpaque(false); analysisCriticalOnly.addActionListener(e -> analysisDag.setCriticalOnly(analysisCriticalOnly.isSelected())); controls.add(analysisCriticalOnly);
         analysisRun.addActionListener(e -> startAnalysis());
         analysisBaselineMode.addActionListener(e -> updateAnalysisControls());
         JPanel boundaries = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-        boundaries.add(new JLabel("开始任务  Thread：")); boundaries.add(analysisStartThread); boundaries.add(new JLabel("Level：")); boundaries.add(analysisStartLevel);
-        boundaries.add(new JLabel("FAB：")); boundaries.add(analysisStartFab); boundaries.add(new JLabel("  →  结束任务  Thread：")); boundaries.add(analysisEndThread);
+        boundaries.add(new JLabel("批次启动作业  Thread：")); boundaries.add(analysisStartThread); boundaries.add(new JLabel("Level：")); boundaries.add(analysisStartLevel);
+        boundaries.add(new JLabel("FAB：")); boundaries.add(analysisStartFab); boundaries.add(new JLabel("  →  批次结束作业  Thread：")); boundaries.add(analysisEndThread);
         boundaries.add(new JLabel("Level：")); boundaries.add(analysisEndLevel); boundaries.add(new JLabel("FAB：")); boundaries.add(analysisEndFab);
         JPanel inputRows = new JPanel(new GridLayout(2, 1, 0, 4)); inputRows.add(controls); inputRows.add(boundaries);
         JPanel header = new JPanel(new BorderLayout(0, 6)); header.add(inputRows, BorderLayout.NORTH);
@@ -216,6 +221,35 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
     private void updateAnalysisControls() {
         int mode = analysisBaselineMode.getSelectedIndex();
         analysisBaselineDate.setEnabled(mode == 1); analysisRecentCount.setEnabled(mode == 2);
+    }
+
+    private void installAnalysisHelp() {
+        analysisTable.getTableHeader().addMouseMotionListener(new MouseAdapter() {
+            @Override public void mouseMoved(MouseEvent event) {
+                int view = analysisTable.getTableHeader().columnAtPoint(event.getPoint());
+                int model = view < 0 ? -1 : analysisTable.convertColumnIndexToModel(view);
+                analysisTable.getTableHeader().setToolTipText(AnalysisUiText.tooltip(model));
+            }
+        });
+        analysisTable.addMouseListener(new MouseAdapter() {
+            @Override public void mousePressed(MouseEvent event) { showAnalysisPopup(event); }
+            @Override public void mouseReleased(MouseEvent event) { showAnalysisPopup(event); }
+        });
+    }
+
+    private void showAnalysisPopup(MouseEvent event) {
+        if (!event.isPopupTrigger()) return;
+        int viewRow = analysisTable.rowAtPoint(event.getPoint());
+        if (viewRow < 0) return;
+        analysisTable.setRowSelectionInterval(viewRow, viewRow);
+        Models.AnalysisTaskMetric metric = analysisModel.rowAt(analysisTable.convertRowIndexToModel(viewRow));
+        showTextDialog("耗时分析 - " + metric.fabId, AnalysisUiText.details(metric), 28, 72);
+    }
+
+    private void showTextDialog(String title, String value, int rows, int columns) {
+        JTextArea text = new JTextArea(value, rows, columns);
+        text.setEditable(false); text.setLineWrap(true); text.setWrapStyleWord(true); text.setCaretPosition(0);
+        JOptionPane.showMessageDialog(this, new JScrollPane(text), title, JOptionPane.INFORMATION_MESSAGE);
     }
 
     private void startAnalysis() {
@@ -469,7 +503,7 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
     private static JTable table(AbstractTableModel model) {
         JTable table = new JTable(model); table.setRowHeight(42); table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF); table.setFillsViewportHeight(true);
         int[] widths = model instanceof TaskTableModel ? new int[]{135, 220, 210, 65, 135, 135, 135, 155, 240}
-            : model instanceof AnalysisTableModel ? new int[]{135, 210, 145, 115, 155, 155, 155, 155, 125, 125, 115, 115, 115, 115, 115, 115, 115, 115, 100, 260}
+            : model instanceof AnalysisTableModel ? AnalysisUiText.WIDTHS
             : new int[]{95, 145, 220, 145, 135, 135, 125, 260};
         for (int i = 0; i < widths.length; i++) table.getColumnModel().getColumn(i).setPreferredWidth(widths[i]);
         TableCellClipboard.install(table);
@@ -537,9 +571,7 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
     }
 
     private static class AnalysisTableModel extends AbstractTableModel {
-        private final String[] columns = {"FAB ID", "FAB 描述", "Thread / Level", "分析类型", "当天完成时间", "基准完成时间",
-            "当天依赖就绪", "基准依赖就绪", "当天就绪→R", "基准就绪→R", "R 区间差",
-            "当天执行", "基准执行", "执行差", "当天等待", "基准等待", "等待差", "完成偏移差", "延迟贡献", "原因"};
+        private final String[] columns = AnalysisUiText.COLUMNS;
         private List<Models.AnalysisTaskMetric> rows = new ArrayList<Models.AnalysisTaskMetric>();
         void setRows(List<Models.AnalysisTaskMetric> values) { rows = new ArrayList<Models.AnalysisTaskMetric>(values); fireTableDataChanged(); }
         Models.AnalysisTaskMetric rowAt(int row) { return rows.get(row); }
@@ -547,17 +579,17 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
         public Object getValueAt(int row, int column) {
             Models.AnalysisTaskMetric m = rows.get(row);
             switch (column) {
-                case 0: return m.fabId; case 1: return m.fabDescription; case 2: return m.threadId + " / " + m.levelNo; case 3: return m.confidence;
-                case 4: return UiFormat.dateTime(m.completedAt); case 5: return baselineCompletion(m);
-                case 6: return UiFormat.dateTime(m.readinessAt); case 7: return UiFormat.dateTime(m.baselineReadinessAt);
-                case 8: return duration(m.readyToCompleteSeconds); case 9: return duration(m.baselineReadyToCompleteSeconds); case 10: return signed(m.readyToCompleteDeltaSeconds);
-                case 11: return duration(m.executionSeconds); case 12: return duration(m.baselineExecutionSeconds); case 13: return signed(m.executionDeltaSeconds);
-                case 14: return duration(m.waitSeconds); case 15: return duration(m.baselineWaitSeconds); case 16: return signed(m.waitDeltaSeconds);
-                case 17: return signed(m.completionDelaySeconds); case 18: return UiFormat.duration(m.delayContributionSeconds); default: return m.reason;
+                case 0: return m.fabId; case 1: return m.fabDescription; case 2: return m.threadId + " / " + m.levelNo; case 3: return m.status;
+                case 4: return m.confidence; case 5: return UiFormat.dateTime(m.completedAt); case 6: return baselineCompletion(m);
+                case 7: return signed(m.readinessClockDeltaSeconds); case 8: return m.keyDelayedDependency;
+                case 9: return m.waitReason; case 10: return m.primaryThreadBlocker; case 11: return duration(m.threadBlockedSeconds);
+                case 12: return signed(m.executionDeltaSeconds); case 13: return signed(m.waitDeltaSeconds);
+                case 14: return signed(m.readyToCompleteDeltaSeconds); case 15: return signed(m.completionDelaySeconds);
+                case 16: return UiFormat.duration(m.delayContributionSeconds); default: return m.reason;
             }
         }
         private static String baselineCompletion(Models.AnalysisTaskMetric metric) {
-            if (metric.baselineCompletionAverage) return metric.baselineCompletionOffsetSeconds == null ? "--" : "平均偏移 " + UiFormat.duration(metric.baselineCompletionOffsetSeconds);
+            if (metric.baselineCompletionAverage) return metric.baselineCompletionOffsetSeconds == null ? "--" : "平均完成偏移 " + signed(metric.baselineCompletionOffsetSeconds);
             return UiFormat.dateTime(metric.baselineCompletedAt);
         }
         private static String duration(Long seconds) { return seconds == null ? "--" : UiFormat.duration(seconds); }

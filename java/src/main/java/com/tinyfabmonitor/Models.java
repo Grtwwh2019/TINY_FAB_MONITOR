@@ -145,14 +145,36 @@ final class Models {
         Long readyToCompleteSeconds;
         Long baselineReadyToCompleteSeconds;
         Long readyToCompleteDeltaSeconds;
+        Long readinessClockDeltaSeconds;
         Long completionOffsetSeconds;
         Long baselineCompletionOffsetSeconds;
         Long completionDelaySeconds;
         long delayContributionSeconds;
         int anomalyCount;
+        int baselineSampleCount;
+        String keyDelayedDependency = "--";
+        List<String> delayedDependencyChains = new ArrayList<String>();
+        List<String> incompleteDependencies = new ArrayList<String>();
+        String waitReason = "数据不足";
+        List<AnalysisBlocker> threadBlockers = new ArrayList<AnalysisBlocker>();
+        String primaryThreadBlocker = "--";
+        Long threadBlockedSeconds;
+        boolean schedulingConflict;
+        String evidence = "";
         String confidence = "数据不足";
         String reason = "数据不足";
         boolean criticalPath;
+    }
+
+    static class AnalysisBlocker {
+        String fabId = "";
+        String fabDescription = "";
+        String threadId = "";
+        String levelNo = "";
+        Date startedAt;
+        Date completedAt;
+        long overlapSeconds;
+        boolean ongoing;
     }
 
     static class AnalysisResult {
@@ -166,14 +188,24 @@ final class Models {
         long targetDurationSeconds;
         long baselineDurationSeconds;
         long overallDeltaSeconds;
+        Long targetBusinessCompletionOffsetSeconds;
+        long baselineBusinessCompletionOffsetSeconds;
+        Date baselineFinish;
+        Date expectedFinish;
         Date predictedFinish;
+        Long completionDelaySeconds;
+        boolean predictedDelay;
+        String anchorMode = "";
+        boolean dependencyPathComplete;
         String startBasis = "";
         String startTaskLabel = "";
         String endTaskLabel = "";
         String summary = "";
         String detail = "";
         List<AnalysisTaskMetric> rows = new ArrayList<AnalysisTaskMetric>();
+        List<AnalysisTaskMetric> allRows = new ArrayList<AnalysisTaskMetric>();
         List<Dependency> dependencies = new ArrayList<Dependency>();
+        List<Dependency> readinessCriticalDependencies = new ArrayList<Dependency>();
         List<String> criticalPath = new ArrayList<String>();
         int preciseCount;
         int estimatedCount;

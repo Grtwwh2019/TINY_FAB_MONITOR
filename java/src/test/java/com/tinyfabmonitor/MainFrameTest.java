@@ -88,6 +88,14 @@ public class MainFrameTest {
         assertEquals(null, analysis.getToolTipText(new MouseEvent(analysis, MouseEvent.MOUSE_MOVED, 0, 0, 10, 10, 0, false)));
     }
 
+    @Test public void analysisMetricsHaveReadableChineseExplanations() {
+        assertTrue(AnalysisUiText.help().contains("依赖就绪时间"));
+        assertTrue(AnalysisUiText.help().contains("同 Thread 阻塞"));
+        assertTrue(AnalysisUiText.tooltip(7).contains("依赖就绪"));
+        assertTrue(AnalysisUiText.tooltip(11).contains("并集"));
+        assertEquals(AnalysisUiText.COLUMNS.length, AnalysisUiText.WIDTHS.length);
+    }
+
     private static void assertInvalid(Runnable action) {
         try { action.run(); org.junit.Assert.fail("应拒绝越界输入"); }
         catch (IllegalArgumentException expected) {}
