@@ -26,11 +26,14 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Queue;
+import java.util.Set;
+import java.util.LinkedHashSet;
 
 final class AnalysisDagPanel extends JPanel {
     private static final int WIDTH = 205, HEIGHT = 62;
     private final Map<String, Node> nodes = new LinkedHashMap<String, Node>();
     private final List<Models.Dependency> edges = new ArrayList<Models.Dependency>();
+    private final Set<String> readinessEdges = new LinkedHashSet<String>();
     private Models.AnalysisResult latest = new Models.AnalysisResult();
     private boolean criticalOnly = true;
 
@@ -52,14 +55,17 @@ final class AnalysisDagPanel extends JPanel {
     void setResult(Models.AnalysisResult value) { latest = value == null ? new Models.AnalysisResult() : value; rebuild(); }
 
     private void rebuild() {
-        nodes.clear(); edges.clear();
-        for (Models.AnalysisTaskMetric metric : latest.rows) {
+        nodes.clear(); edges.clear(); readinessEdges.clear();
+        List<Models.AnalysisTaskMetric> source = latest.allRows.isEmpty() ? latest.rows : latest.allRows;
+        for (Models.AnalysisTaskMetric metric : source) {
             if (criticalOnly && !metric.criticalPath) continue;
             Node node = new Node(); node.metric = metric; nodes.put(normalize(metric.fabId), node);
         }
         for (Models.Dependency edge : latest.dependencies) {
             if (nodes.containsKey(normalize(edge.fabId)) && nodes.containsKey(normalize(edge.dependencyId))) edges.add(edge);
         }
+        for (Models.Dependency edge : latest.readinessCriticalDependencies)
+            readinessEdges.add(edgeKey(edge));
         layoutGraph(); repaint();
     }
 
@@ -102,9 +108,11 @@ final class AnalysisDagPanel extends JPanel {
         super.paintComponent(graphics); Graphics2D g = (Graphics2D) graphics.create();
         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
         if (nodes.isEmpty()) { g.setColor(Color.GRAY); g.drawString("完成分析后在此显示差异 DAG", 25, 35); g.dispose(); return; }
-        g.setColor(new Color(155, 168, 181)); g.setStroke(new BasicStroke(1.4f));
         for (Models.Dependency edge : edges) {
             Node from = nodes.get(normalize(edge.dependencyId)), to = nodes.get(normalize(edge.fabId)); if (from == null || to == null) continue;
+            boolean determinesReadiness = readinessEdges.contains(edgeKey(edge));
+            g.setColor(determinesReadiness ? new Color(205, 76, 45) : new Color(155, 168, 181));
+            g.setStroke(new BasicStroke(determinesReadiness ? 2.8f : 1.4f));
             double x1 = from.x + WIDTH, y1 = from.y + HEIGHT / 2.0, x2 = to.x, y2 = to.y + HEIGHT / 2.0, middle = (x1 + x2) / 2.0;
             Path2D line = new Path2D.Double(); line.moveTo(x1, y1); line.curveTo(middle, y1, middle, y2, x2 - 8, y2); g.draw(line);
             Path2D arrow = new Path2D.Double(); arrow.moveTo(x2, y2); arrow.lineTo(x2 - 10, y2 - 5); arrow.lineTo(x2 - 10, y2 + 5); arrow.closePath(); g.fill(arrow);
@@ -119,7 +127,7 @@ final class AnalysisDagPanel extends JPanel {
         g.setColor(border); g.setStroke(new BasicStroke(metric.criticalPath ? 3f : 1.5f)); g.draw(new RoundRectangle2D.Double(node.x, node.y, WIDTH, HEIGHT, 14, 14));
         g.setFont(getFont().deriveFont(Font.BOLD, 12f)); g.setColor(new Color(30, 42, 55)); g.drawString(clip(metric.fabId, 24), node.x + 12, node.y + 22);
         g.setFont(getFont().deriveFont(11f)); g.setColor(border);
-        String delay = metric.completionDelaySeconds == null ? "无完成时间对比" : "完成偏移 " + signed(metric.completionDelaySeconds);
+        String delay = metric.completionDelaySeconds == null ? "无有效 R 对比" : "启动对齐完成差 " + signed(metric.completionDelaySeconds);
         g.drawString(delay, node.x + 12, node.y + 42);
         g.setColor(new Color(88, 101, 115)); g.drawString(clip(metric.reason, 25), node.x + 12, node.y + 57);
     }
@@ -140,27 +148,17 @@ final class AnalysisDagPanel extends JPanel {
     }
 
     private void showDetails(Models.AnalysisTaskMetric m) {
-        String textValue = "FAB：" + m.fabId + "\n描述：" + empty(m.fabDescription) + "\nThread / Level：" +
-            m.threadId + " / " + m.levelNo + "\n状态：" + m.status + "\n分析类型：" + m.confidence +
-            "\n原因：" + m.reason + "\n\n当天 R：" + UiFormat.dateTime(m.completedAt) +
-            "\n基准 R：" + UiFormat.dateTime(m.baselineCompletedAt) + "\n当天依赖就绪：" + UiFormat.dateTime(m.readinessAt) +
-            "\n基准依赖就绪：" + UiFormat.dateTime(m.baselineReadinessAt) +
-            "\n当天就绪→R：" + nullableDuration(m.readyToCompleteSeconds) +
-            "\n基准就绪→R：" + nullableDuration(m.baselineReadyToCompleteSeconds) +
-            "\nR 区间差：" + nullableSigned(m.readyToCompleteDeltaSeconds) +
-            "\n执行差：" + nullableSigned(m.executionDeltaSeconds) + "\n等待差：" + nullableSigned(m.waitDeltaSeconds) +
-            "\n完成偏移差：" + nullableSigned(m.completionDelaySeconds) +
-            "\n延迟贡献：" + UiFormat.duration(m.delayContributionSeconds) +
-            (m.startBasis.isEmpty() ? "" : "\n估算依据：" + m.startBasis);
+        String textValue = AnalysisUiText.details(m);
         JTextArea text = new JTextArea(textValue, 20, 56);
         text.setEditable(false); text.setLineWrap(true); text.setWrapStyleWord(true); text.setCaretPosition(0);
         JOptionPane.showMessageDialog(this, new JScrollPane(text), "耗时分析 - " + m.fabId, JOptionPane.INFORMATION_MESSAGE);
     }
 
-    private static Color color(Models.AnalysisTaskMetric m) {
-        if (m.delayContributionSeconds > 0) return new Color(205, 45, 45);
-        if (m.completionDelaySeconds != null && m.completionDelaySeconds > 0) return new Color(217, 123, 0);
-        if ("数据不足".equals(m.confidence)) return new Color(112, 122, 132);
+    private Color color(Models.AnalysisTaskMetric m) {
+        long threshold = latest.attentionThresholdSeconds;
+        if (!m.dataQuality.startsWith("可比较")) return new Color(112, 122, 132);
+        if (m.readyToCompleteDeltaSeconds != null && m.readyToCompleteDeltaSeconds > threshold) return new Color(205, 45, 45);
+        if (m.readinessClockDeltaSeconds != null && m.readinessClockDeltaSeconds > threshold) return new Color(217, 123, 0);
         return new Color(22, 143, 98);
     }
     private static Color fill(Color value) { return new Color(Math.min(255, value.getRed() + 225) / 2 + 120, Math.min(255, value.getGreen() + 225) / 2 + 120, Math.min(255, value.getBlue() + 225) / 2 + 120); }
@@ -170,4 +168,5 @@ final class AnalysisDagPanel extends JPanel {
     private static String clip(String value, int length) { if (value == null) return ""; return value.length() <= length ? value : value.substring(0, length - 1) + "…"; }
     private static String empty(String value) { return value == null || value.isEmpty() ? "--" : value; }
     private static String normalize(String value) { return value == null ? "" : value.trim().toUpperCase(Locale.ROOT); }
+    private static String edgeKey(Models.Dependency edge) { return normalize(edge.dependencyId) + "->" + normalize(edge.fabId); }
 }

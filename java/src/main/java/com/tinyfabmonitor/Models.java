@@ -111,6 +111,7 @@ final class Models {
         String endThreadId = "";
         String endLevelNo = "";
         String endFabId = "";
+        long attentionThresholdSeconds = 30L;
 
         String startGroupId() { return startThreadId + "|" + startLevelNo + "|" + startFabId; }
         String endGroupId() { return endThreadId + "|" + endLevelNo + "|" + endFabId; }
@@ -122,22 +123,9 @@ final class Models {
         String threadId = "";
         String levelNo = "";
         String status = "";
-        Date startedAt;
         Date completedAt;
         Date baselineCompletedAt;
         boolean baselineCompletionAverage;
-        boolean executionEstimated;
-        boolean baselineExecutionEstimated;
-        boolean waitEstimated;
-        boolean baselineWaitEstimated;
-        int estimateSampleCount;
-        String startBasis = "";
-        Long executionSeconds;
-        Long baselineExecutionSeconds;
-        Long executionDeltaSeconds;
-        Long waitSeconds;
-        Long baselineWaitSeconds;
-        Long waitDeltaSeconds;
         Date readinessAt;
         Date baselineReadinessAt;
         boolean readinessPartial;
@@ -145,11 +133,21 @@ final class Models {
         Long readyToCompleteSeconds;
         Long baselineReadyToCompleteSeconds;
         Long readyToCompleteDeltaSeconds;
+        Long readinessClockDeltaSeconds;
+        Long completionClockDeltaSeconds;
+        String targetReadinessDependency = "--";
+        String baselineReadinessDependency = "--";
+        String dataQuality = "数据不足";
+        String recommendation = "无法比较";
+        boolean dependencyMappingAmbiguous;
+        List<String> ambiguousDependencies = new ArrayList<String>();
         Long completionOffsetSeconds;
         Long baselineCompletionOffsetSeconds;
         Long completionDelaySeconds;
-        long delayContributionSeconds;
-        int anomalyCount;
+        int baselineSampleCount;
+        List<String> delayedDependencyChains = new ArrayList<String>();
+        List<String> incompleteDependencies = new ArrayList<String>();
+        String evidence = "";
         String confidence = "数据不足";
         String reason = "数据不足";
         boolean criticalPath;
@@ -166,19 +164,30 @@ final class Models {
         long targetDurationSeconds;
         long baselineDurationSeconds;
         long overallDeltaSeconds;
+        Long targetBusinessCompletionOffsetSeconds;
+        long baselineBusinessCompletionOffsetSeconds;
+        Date baselineFinish;
+        Date expectedFinish;
         Date predictedFinish;
+        Long completionDelaySeconds;
+        boolean predictedDelay;
+        String anchorMode = "";
+        boolean dependencyPathComplete;
         String startBasis = "";
         String startTaskLabel = "";
         String endTaskLabel = "";
         String summary = "";
         String detail = "";
         List<AnalysisTaskMetric> rows = new ArrayList<AnalysisTaskMetric>();
+        List<AnalysisTaskMetric> allRows = new ArrayList<AnalysisTaskMetric>();
         List<Dependency> dependencies = new ArrayList<Dependency>();
+        List<Dependency> readinessCriticalDependencies = new ArrayList<Dependency>();
         List<String> criticalPath = new ArrayList<String>();
         int preciseCount;
         int estimatedCount;
         int completionOnlyCount;
         int insufficientCount;
+        long attentionThresholdSeconds = 30L;
     }
 
     static class AnalysisState {
