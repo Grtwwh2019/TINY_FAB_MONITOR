@@ -6,16 +6,16 @@
 
 本版耗时分析采用纯 R 模式：基准可选择指定单日、前一个完整日期或最近多个完整日期平均，只用指定结束作业的有效 R 完成时刻判断整体 delay。启动作业 Level 必须大于等于40且有真实 R；它只用于批次内部对齐和应完成时间，不改变整体结论。
 
-任务偏移精确拆成“依赖就绪偏移 + 就绪后完成间隔差”，并递归显示实际决定就绪时刻的前置任务。未完成任务与普通依赖 DAG 共用纯 R ETA：显示 P50/P75、历史范围、置信度和 Checkpoint；超出历史范围后取消点预测并提示人工检查。ETA 不作为正式 delay 判定。
+任务偏移精确拆成“依赖就绪偏移 + 就绪后完成间隔差”，并递归显示实际决定就绪时刻的前置任务。未完成任务与普通依赖 DAG 共用纯 R ETA：W、I 和占位 R 沿实际依赖递归，中间节点可以是任意 Level ≥ 40，有效真实 R 作为精确锚点，最远到 Level 40；显示 P50/P75、历史范围、置信度和 Checkpoint。超出历史范围后取消点预测并提示人工检查，ETA 不作为正式 delay 判定。
 
 SHA-256：
 
 ```text
 TinyFabMonitor.jar
-c3b6845609abe7dd1cb7e08aae4d6c70c92367e6e9d76433de64110597e1deef
+b42420da75a83e0bad100a044666a7f95feb48ff78240671f9ae50892fb9c1e5
 
 TINY_FAB_MONITOR-Java8-Windows-x64.zip
-b74c520ed74c384085c6605709634016d15e57c890ce4c89f07045af47c0e73d
+fd7627b7df3943260341572c908a0b6fe2124e99656dc88cce7724907d4f711d
 ```
 
 下载 JAR 后，将 `java/config.example.properties` 复制为同目录的 `config.properties`，填写实际连接信息和表名，然后运行：

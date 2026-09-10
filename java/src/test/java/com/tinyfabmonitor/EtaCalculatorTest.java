@@ -64,6 +64,18 @@ public class EtaCalculatorTest {
         assertFalse(blocked.available); assertTrue(blocked.detail.contains("当前为 E"));
     }
 
+    @Test public void validRAtAnyLevelAbove40IsAnExactAnchor() {
+        Models.TaskView boundary = task("BOUNDARY", "40", "W", null, 0L);
+        Models.TaskView completedMiddle = task("MIDDLE", "46", "R", 50000L, 0L);
+        Models.TaskView root = task("ROOT", "58", "W", null, 30L);
+        Models.DagEta eta = calculate("ROOT", Arrays.asList(boundary, completedMiddle, root),
+            Arrays.asList(edge("MIDDLE", "BOUNDARY"), edge("ROOT", "MIDDLE")), 50000L);
+        assertTrue(eta.available);
+        assertEquals(80000L, eta.estimatedCompletion.getTime());
+        assertEquals(Arrays.asList("MIDDLE", "ROOT"), eta.criticalPath);
+        assertFalse(eta.detail.contains("BOUNDARY"));
+    }
+
     private static Models.DagEta calculate(String root, List<Models.TaskView> tasks, List<Models.Dependency> edges, long now) {
         return EtaCalculator.calculate(root, tasks, edges, new Date(now), new Date(now + 60000L), 30);
     }

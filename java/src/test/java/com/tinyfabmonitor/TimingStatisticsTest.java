@@ -49,6 +49,20 @@ public class TimingStatisticsTest {
         assertEquals("较高置信度", TimingStatistics.confidence(5));
     }
 
+    @Test public void directUpstreamMayBeAnyLevelAtOrAbove40() {
+        Models.TaskView dependency = view("20260103", "MID", "46", "R", 5000000);
+        Models.TaskView root = view("20260103", "ROOT", "58", "W", 0);
+        List<Models.TrackedTask> history = Arrays.asList(
+            tracked("20260101", "MID", "46", 1000000), tracked("20260101", "ROOT", "58", 1060000),
+            tracked("20260102", "MID", "46", 2000000), tracked("20260102", "ROOT", "58", 2120000));
+        TimingStatistics.apply(Arrays.asList(dependency, root), history,
+            Collections.<Models.RunRecord>emptyList(), Arrays.asList(new Models.Dependency("ROOT", "MID")));
+        assertEquals(new Date(5000000), root.readinessAt);
+        assertEquals(Arrays.asList("MID"), root.readinessDrivers);
+        assertEquals(2, root.readyToCompleteSampleCount);
+        assertEquals(90L, root.readyToCompleteTypicalSeconds);
+    }
+
     private static Models.TaskView view(String date, String fab, String level, String status, long millis) {
         Models.TaskView task = new Models.TaskView(); task.processDate = date; task.threadId = "T"; task.levelNo = level;
         task.fabId = fab; task.status = status;

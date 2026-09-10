@@ -115,8 +115,18 @@ final class DependencySearch {
 
     private static boolean shouldExpandForEta(Models.OracleTask task) {
         if (task == null) return false;
-        if ("W".equalsIgnoreCase(task.status)) return true;
-        return "R".equalsIgnoreCase(task.status) && (task.actTime == null || task.actTimePlaceholder);
+        // Level 40 is the fixed ETA boundary. A real R above it is already an exact
+        // time anchor; every other supported unfinished state must retain its upstream.
+        if (level(task) <= 40) return false;
+        String status = normalize(task.status);
+        if ("E".equals(status) || "B".equals(status)) return false;
+        if ("W".equals(status) || "I".equals(status)) return true;
+        return "R".equals(status) && (task.actTime == null || task.actTimePlaceholder);
+    }
+
+    private static int level(Models.TaskKey task) {
+        try { return Integer.parseInt(task == null || task.levelNo == null ? "" : task.levelNo.trim()); }
+        catch (NumberFormatException e) { return Integer.MIN_VALUE; }
     }
 
     private static Set<String> unexpanded(Collection<String> values, Set<String> expanded) {
