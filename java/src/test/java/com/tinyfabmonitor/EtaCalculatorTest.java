@@ -1,91 +1,77 @@
 package com.tinyfabmonitor;
 
 import org.junit.Test;
-
 import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
-
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.*;
 
 public class EtaCalculatorTest {
-    @Test public void usesValidRTimeAsPathAnchorWithOneHistoryRun() {
-        Models.TaskView anchor = task("A", "R", 1000L, false, 0, 0);
-        Models.TaskView waiting = task("B", "W", null, false, 60, 1);
-        Models.TaskView root = task("ROOT", "W", null, false, 120, 1);
-        Models.DagEta eta = calculate("ROOT", Arrays.asList(anchor, waiting, root),
-            Arrays.asList(edge("B", "A"), edge("ROOT", "B")));
-        assertTrue(eta.available);
-        assertEquals(181000L, eta.estimatedCompletion.getTime());
-        assertEquals(Arrays.asList("A", "B", "ROOT"), eta.criticalPath);
+    @Test public void level40RAnchorsPureREtaAndOneSampleIsEnough() {
+        Models.TaskView start = task("START", "40", "R", 1000L, 0L);
+        Models.TaskView root = task("ROOT", "41", "W", null, 120L);
+        Models.DagEta eta = calculate("ROOT", Arrays.asList(start, root), Arrays.asList(edge("ROOT", "START")), 61000L);
+        assertTrue(eta.available); assertEquals(121000L, eta.estimatedCompletion.getTime());
+        assertEquals("低置信度", eta.confidence); assertEquals(Arrays.asList("START", "ROOT"), eta.criticalPath);
     }
 
-    @Test public void placeholderRContinuesUpstreamAndAddsItsAverage() {
-        Models.TaskView anchor = task("A", "R", 1000L, false, 0, 0);
-        Models.TaskView placeholder = task("B", "R", null, true, 30, 1);
-        Models.TaskView root = task("ROOT", "W", null, false, 60, 1);
-        Models.DagEta eta = calculate("ROOT", Arrays.asList(anchor, placeholder, root),
-            Arrays.asList(edge("B", "A"), edge("ROOT", "B")));
-        assertTrue(eta.available);
-        assertEquals(91000L, eta.estimatedCompletion.getTime());
+    @Test public void filtersImpossibleSamplesAfterTaskIsReady() {
+        Models.TaskView start = task("START", "40", "R", 1000L, 0L);
+        Models.TaskView root = task("ROOT", "41", "I", 50000L, 30L, 90L, 180L);
+        Models.DagEta eta = calculate("ROOT", Arrays.asList(start, root), Arrays.asList(edge("ROOT", "START")), 71000L);
+        assertTrue(eta.available); assertEquals(136000L, eta.estimatedCompletion.getTime());
+        assertEquals(2, eta.conditionalSampleCount); // 30 is impossible after 70 seconds; 90 and 180 remain.
+        assertEquals(181000L, eta.conservativeCompletion.getTime());
     }
 
-    @Test public void selectsThePathWithLatestEstimatedFinish() {
-        Models.TaskView a = task("A", "R", 0L, false, 0, 0);
-        Models.TaskView b = task("B", "W", null, false, 100, 1);
-        Models.TaskView c = task("C", "R", 90000L, false, 0, 0);
-        Models.TaskView d = task("D", "W", null, false, 30, 1);
-        Models.TaskView root = task("ROOT", "W", null, false, 10, 1);
-        Models.DagEta eta = calculate("ROOT", Arrays.asList(a, b, c, d, root),
-            Arrays.asList(edge("B", "A"), edge("ROOT", "B"), edge("D", "C"), edge("ROOT", "D")));
-        assertTrue(eta.available);
-        assertEquals(130000L, eta.estimatedCompletion.getTime());
-        assertEquals(Arrays.asList("C", "D", "ROOT"), eta.criticalPath);
+    @Test public void exhaustedHistoryCancelsPointEtaAndUsesNextRefreshCheckpoint() {
+        Models.TaskView start = task("START", "40", "R", 1000L, 0L);
+        Models.TaskView root = task("ROOT", "41", "W", null, 30L, 60L);
+        Models.DagEta eta = EtaCalculator.calculate("ROOT", Arrays.asList(start, root), Arrays.asList(edge("ROOT", "START")),
+            new Date(121000L), new Date(180000L), 30);
+        assertFalse(eta.available); assertTrue(eta.lowerBound); assertTrue(eta.detail.contains("超过历史最大值"));
+        assertEquals(new Date(180000L), eta.taskEtas.get("ROOT").nextCheckpoint);
     }
 
-    @Test public void validIStartOverridesOlderUpstreamAndStopsThere() {
-        Models.TaskView running = task("I", "I", 5000L, false, 60, 1); running.startedAt = new Date(5000L);
-        Models.TaskView root = task("ROOT", "W", null, false, 30, 1);
-        Models.DagEta eta = calculate("ROOT", Arrays.asList(running, root), Arrays.asList(edge("ROOT", "I")));
-        assertTrue(eta.available);
-        assertEquals(95000L, eta.estimatedCompletion.getTime());
+    @Test public void longestParallelPathWinsAndTiesAreRetained() {
+        Models.TaskView a = task("A", "40", "R", 1000L, 0L);
+        Models.TaskView b = task("B", "40", "R", 1000L, 0L);
+        Models.TaskView x = task("X", "41", "W", null, 100L);
+        Models.TaskView y = task("Y", "41", "W", null, 100L);
+        Models.TaskView root = task("ROOT", "42", "W", null, 10L);
+        Models.DagEta eta = calculate("ROOT", Arrays.asList(a,b,x,y,root),
+            Arrays.asList(edge("X","A"), edge("Y","B"), edge("ROOT","X"), edge("ROOT","Y")), 1000L);
+        assertTrue(eta.available); assertEquals(111000L, eta.estimatedCompletion.getTime());
+        assertEquals(2, eta.criticalPaths.size());
     }
 
-    @Test public void anomalyAndCyclesReturnExplicitUnavailableResult() {
-        Models.TaskView blocked = task("BLOCKED", "E", 1000L, false, 60, 1);
-        Models.TaskView root = task("ROOT", "W", null, false, 30, 1);
-        Models.DagEta blockedEta = calculate("ROOT", Arrays.asList(blocked, root), Arrays.asList(edge("ROOT", "BLOCKED")));
-        assertFalse(blockedEta.available); assertTrue(blockedEta.detail.contains("BLOCKED"));
-
-        Models.TaskView a = task("A", "W", null, false, 30, 1);
-        Models.DagEta cycle = calculate("ROOT", Arrays.asList(a, root), Arrays.asList(edge("ROOT", "A"), edge("A", "ROOT")));
-        assertFalse(cycle.available); assertTrue(cycle.detail.contains("循环依赖"));
+    @Test public void level40MustHaveRealRAndLevelBelow40IsNeverUsed() {
+        Models.TaskView bad = task("START", "40", "W", null, 0L);
+        Models.TaskView below = task("POLL", "20", "R", 500L, 0L);
+        Models.TaskView root = task("ROOT", "41", "W", null, 60L);
+        Models.DagEta eta = calculate("ROOT", Arrays.asList(bad, below, root),
+            Arrays.asList(edge("START", "POLL"), edge("ROOT", "START")), 1000L);
+        assertFalse(eta.available); assertTrue(eta.detail.contains("Level 40")); assertFalse(eta.detail.contains("POLL"));
     }
 
-    @Test public void level20DependencyProducesReferenceLowerBoundInsteadOfPointEta() {
-        Models.TaskView poll = task("POLL", "R", 1000L, false, 0, 0); poll.levelNo = "20";
-        Models.TaskView root = task("ROOT", "W", null, false, 60, 2); root.hasLevel20Upstream = true;
-        Models.DagEta eta = calculate("ROOT", Arrays.asList(poll, root), Arrays.asList(edge("ROOT", "POLL")));
-        assertTrue(eta.available);
-        assertTrue(eta.lowerBound);
-        assertTrue(eta.summary.contains("参考下限"));
-        assertTrue(eta.detail.contains("不是确定 ETA"));
+    @Test public void iTimeIsIgnoredAndAnomalyCancelsNecessaryPath() {
+        Models.TaskView start = task("START", "40", "R", 1000L, 0L);
+        Models.TaskView running = task("RUN", "41", "I", 50000L, 100L); running.startedAt = new Date(50000L);
+        Models.DagEta eta = calculate("RUN", Arrays.asList(start, running), Arrays.asList(edge("RUN", "START")), 1000L);
+        assertTrue(eta.available); assertEquals(101000L, eta.estimatedCompletion.getTime());
+        running.status = "E";
+        Models.DagEta blocked = calculate("RUN", Arrays.asList(start, running), Arrays.asList(edge("RUN", "START")), 1000L);
+        assertFalse(blocked.available); assertTrue(blocked.detail.contains("当前为 E"));
     }
 
-    private static Models.DagEta calculate(String root, List<Models.TaskView> tasks, List<Models.Dependency> edges) {
-        return EtaCalculator.calculate(root, tasks, edges, new Date(0));
+    private static Models.DagEta calculate(String root, List<Models.TaskView> tasks, List<Models.Dependency> edges, long now) {
+        return EtaCalculator.calculate(root, tasks, edges, new Date(now), new Date(now + 60000L), 30);
     }
-
     private static Models.Dependency edge(String owner, String dependency) { return new Models.Dependency(owner, dependency); }
-
-    private static Models.TaskView task(String fab, String status, Long actTime, boolean placeholder, long average, int count) {
-        Models.TaskView task = new Models.TaskView(); task.fabId = fab; task.status = status; task.levelNo = "41";
-        task.actTime = actTime == null ? null : new Date(actTime); task.actTimePlaceholder = placeholder;
-        task.averageDurationSeconds = average; task.completedRunCount = count;
-        task.executionTypicalSeconds = average; task.executionTypicalSampleCount = count;
-        task.readyToCompleteTypicalSeconds = average; task.readyToCompleteSampleCount = count;
-        return task;
+    private static Models.TaskView task(String fab, String level, String status, Long act, long... samples) {
+        Models.TaskView task = new Models.TaskView(); task.processDate = "20260103"; task.threadId = "T"; task.fabId = fab;
+        task.levelNo = level; task.status = status; task.actTime = act == null ? null : new Date(act);
+        for (long sample : samples) if (sample > 0) task.readyToCompleteSamples.add(sample);
+        task.readyToCompleteSampleCount = task.readyToCompleteSamples.size(); return task;
     }
 }

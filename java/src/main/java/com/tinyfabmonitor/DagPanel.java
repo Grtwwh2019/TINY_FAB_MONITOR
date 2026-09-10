@@ -59,6 +59,7 @@ final class DagPanel extends JPanel {
         long executionTypical, readyTypical;
         int executionTypicalCount, readyTypicalCount;
         boolean readinessPartial;
+        Models.TaskEta eta;
         String etaSummary = "", etaDetail = "";
         int x, y;
     }
@@ -131,7 +132,9 @@ final class DagPanel extends JPanel {
         }
         for (Models.TaskView task : tasksByFab.values()) {
             if (!ViewLogic.showDagTask(task, dashboard.dagRootFabId, hideCompleted)) continue;
-            nodes.put(normalize(task.fabId), nodeOf(task));
+            Node node = nodeOf(task);
+            if (dashboard.dagEta != null) node.eta = dashboard.dagEta.taskEtas.get(normalize(task.fabId));
+            nodes.put(normalize(task.fabId), node);
         }
         Node rootNode = nodes.get(normalize(dashboard.dagRootFabId));
         if (rootNode != null && dashboard.dagEta != null) {
@@ -231,7 +234,8 @@ final class DagPanel extends JPanel {
     }
 
     private void drawNode(Graphics2D g, Node node) {
-        Color color = statusColor(node.status);
+        Color color = node.eta != null && node.eta.manualInterventionRequired ? new Color(190, 35, 35) :
+            node.eta != null && node.eta.checkpoint ? new Color(214, 119, 0) : statusColor(node.status);
         boolean unfinished = !"R".equalsIgnoreCase(node.status);
         if (node.id.equalsIgnoreCase(focusedId)) {
             g.setColor(new Color(255, 174, 0)); g.setStroke(new BasicStroke(4f));
@@ -249,18 +253,31 @@ final class DagPanel extends JPanel {
         String statusTime = node.actTimePlaceholder ? "无有效时间" : UiFormat.dateTime(node.actTime);
         String duration = node.startedAt == null ? "--" : node.completedAt != null ? UiFormat.duration(node.lastDuration) : UiFormat.duration(node.currentDuration);
         String average = node.completedCount >= 1 ? UiFormat.duration(node.average) + "（" + node.completedCount + "次）" : "--（" + node.completedCount + "次）";
-        String executionTypical = node.executionTypicalCount < 1 ? "--" : UiFormat.duration(node.executionTypical) +
-            "（" + node.executionTypicalCount + "次，" + TimingStatistics.confidence(node.executionTypicalCount) + "）";
         String readyTypical = node.readyTypicalCount < 1 ? "--" : UiFormat.duration(node.readyTypical) +
             "（" + node.readyTypicalCount + "次，" + TimingStatistics.confidence(node.readyTypicalCount) + "）";
         return "FAB ID：" + node.id + "\n描述：" + empty(node.description) + "\nThread ID：" + node.threadId +
             "\nLevel No：" + node.levelNo + "\n状态：" + node.status + "\n状态开始时间：" + statusTime +
             "\n真实/记录 I：" + UiFormat.dateTime(node.startedAt) + "\n当前/本次时长：" + duration +
-            "\n历史平均：" + average + "\n依赖就绪时间：" + UiFormat.dateTime(node.readinessAt) +
+            "\n历史平均（监控 I→R）：" + average + "\n依赖就绪时间：" + UiFormat.dateTime(node.readinessAt) +
             "\n本次就绪到完成：" + (node.readyToComplete == null ? "--" : UiFormat.duration(node.readyToComplete)) +
-            "\n历史 I→R 典型值：" + executionTypical + "\n历史就绪→R 典型值：" + readyTypical +
-            (node.readinessPartial ? "\n注意：Level 20 路径已截止，依赖就绪信息仅部分可观测。" : "") +
+            "\n纯R历史就绪→R P50：" + readyTypical + etaDetails(node.eta) +
             (node.etaSummary.isEmpty() ? "" : "\n\n" + node.etaSummary + "\n" + node.etaDetail);
+    }
+
+    private static String etaDetails(Models.TaskEta eta) {
+        if (eta == null) return "";
+        return "\n\n纯 R ETA 详情：" +
+            "\n依赖就绪：" + UiFormat.dateTime(eta.readinessAt) +
+            "\n就绪驱动：" + empty(eta.readinessDriver) +
+            "\n历史样本：" + eta.sampleCount + "（当前仍可能的条件样本 " + eta.conditionalSampleCount + "）" +
+            "\n历史范围：" + UiFormat.duration(eta.minimumSeconds) + "–" + UiFormat.duration(eta.maximumSeconds) +
+            "\n已等待：" + UiFormat.duration(eta.elapsedSeconds) +
+            "\n预计 R P50 / P75：" + UiFormat.dateTime(eta.p50Completion) + " / " + UiFormat.dateTime(eta.p75Completion) +
+            "\n置信度：" + empty(eta.confidence) +
+            "\n下一个 Checkpoint：" + UiFormat.dateTime(eta.nextCheckpoint) +
+            "\n人工介入阈值：" + UiFormat.dateTime(eta.manualInterventionAt) +
+            (eta.manualInterventionRequired ? "\n警告：必须人工介入" : eta.historicalRangeExceeded ? "\n警告：已超过历史范围，立即人工检查" : "") +
+            (eta.reason.isEmpty() ? "" : "\n说明：" + eta.reason);
     }
 
     private boolean showPopup(MouseEvent event) {

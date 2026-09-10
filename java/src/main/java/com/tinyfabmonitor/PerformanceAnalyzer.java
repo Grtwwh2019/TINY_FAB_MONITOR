@@ -76,8 +76,8 @@ final class PerformanceAnalyzer {
         if (day.startTask == null) return "分析日期找不到启动作业";
         if (day.endTask == null) return "分析日期找不到结束作业";
         if (groupKey(day.startTask.task).equals(groupKey(day.endTask.task))) return "启动作业和结束作业不能相同";
-        if (isLevel20(day.startTask.task)) return "Level 20 循环 Poll 作业不能作为批次启动作业";
-        if (isLevel20(day.endTask.task)) return "Level 20 循环 Poll 作业不能作为批次结束作业";
+        if (!isLevel40(day.startTask.task)) return "批次启动作业必须是 Level 40";
+        if (level(day.endTask.task) < 40) return "批次结束作业 Level 不能小于 40";
         if (day.startTask.completedAt == null) {
             String cause = day.startTask.task.actTimePlaceholder ? "R 时间是占位值" : "尚未进入 R 或没有有效 R 时间";
             return "分析日期的启动作业缺少真实 R 时间（" + cause + "），请切换日期或启动作业";
@@ -95,7 +95,18 @@ final class PerformanceAnalyzer {
                                          List<Models.Dependency> allDependencies,
                                          List<String> baselineCandidates,
                                          Date now) {
+        return analyze(request, tasksByDate, runs, allDependencies, baselineCandidates, now, null);
+    }
+
+    static Models.AnalysisResult analyze(Models.AnalysisRequest request,
+                                         Map<String, List<Models.OracleTask>> tasksByDate,
+                                         List<Models.RunRecord> runs,
+                                         List<Models.Dependency> allDependencies,
+                                         List<String> baselineCandidates,
+                                         Date now,
+                                         Models.DagEta targetEta) {
         Models.AnalysisResult result = new Models.AnalysisResult();
+        if (targetEta != null) result.eta = targetEta;
         result.analysisDate = request.analysisDate;
         result.startTaskLabel = taskLabel(request.startThreadId, request.startLevelNo, request.startFabId);
         result.endTaskLabel = taskLabel(request.endThreadId, request.endLevelNo, request.endFabId);
@@ -233,13 +244,13 @@ final class PerformanceAnalyzer {
         if (day.startTask == null) throw new IllegalArgumentException("分析日期找不到启动作业");
         if (day.endTask == null) throw new IllegalArgumentException("分析日期找不到结束作业");
         if (groupKey(day.startTask.task).equals(groupKey(day.endTask.task))) throw new IllegalArgumentException("启动作业和结束作业不能相同");
-        if (isLevel20(day.endTask.task)) throw new IllegalArgumentException("Level 20 循环 Poll 作业不能作为批次结束作业");
-        if (isLevel20(day.startTask.task)) throw new IllegalArgumentException("Level 20 循环 Poll 作业不能作为批次启动作业");
+        if (level(day.endTask.task) < 40) throw new IllegalArgumentException("批次结束作业 Level 不能小于 40");
+        if (!isLevel40(day.startTask.task)) throw new IllegalArgumentException("批次启动作业必须是 Level 40");
     }
 
     private static void requireRAnchor(DaySnapshot day, boolean target) {
         if (day.startTask == null) throw new IllegalArgumentException(dayLabel(day, target) + "找不到启动作业");
-        if (isLevel20(day.startTask.task)) throw new IllegalArgumentException(dayLabel(day, target) + "的 Level 20 循环 Poll 作业不能作为批次启动作业");
+        if (!isLevel40(day.startTask.task)) throw new IllegalArgumentException(dayLabel(day, target) + "的启动作业必须是 Level 40");
         if (day.startTask.completedAt == null) {
             String cause = day.startTask.task.actTimePlaceholder ? "R 时间是占位值" : "尚未进入 R 或没有有效 R 时间";
             throw new IllegalArgumentException(dayLabel(day, target) + "的启动作业缺少真实 R 时间（" + cause + "），请切换日期或启动作业");
@@ -249,10 +260,10 @@ final class PerformanceAnalyzer {
     private static String baselineRUnusableReason(DaySnapshot day) {
         if (day.startTask == null) return "找不到启动作业";
         if (day.endTask == null) return "找不到结束作业";
-        if (isLevel20(day.endTask.task)) return "Level 20 循环 Poll 作业不能作为批次结束作业";
+        if (level(day.endTask.task) < 40) return "结束作业 Level 不能小于 40";
         if (!"R".equalsIgnoreCase(day.endTask.task.status)) return "结束作业状态不是 R";
         if (day.finish == null) return day.endTask.task.actTimePlaceholder ? "结束作业 R 时间是占位值" : "结束作业没有有效 R 时间";
-        if (isLevel20(day.startTask.task)) return "Level 20 循环 Poll 作业不能作为批次启动作业";
+        if (!isLevel40(day.startTask.task)) return "启动作业必须是 Level 40";
         if (day.startTask.completedAt == null) return day.startTask.task.actTimePlaceholder ?
             "启动作业 R 时间是占位值" : "启动作业没有真实 R 时间";
         if (day.finish.before(day.startTask.completedAt)) return "结束作业 R 时间早于启动作业 R 时间";
@@ -303,8 +314,7 @@ final class PerformanceAnalyzer {
             value.dataQuality = "依赖R不完整";
             value.recommendation = "人工核对前置依赖";
         } else {
-            value.dataQuality = value.readinessAt == null ? "可比较（无依赖分解）" :
-                value.readinessPartial || value.baselineReadinessPartial ? "可比较（Level 20路径截止）" : "可比较";
+            value.dataQuality = value.readinessAt == null ? "可比较（无依赖分解）" : "可比较";
             long completion = value.completionDelaySeconds == null ? Long.MIN_VALUE : value.completionDelaySeconds;
             long readiness = value.readinessClockDeltaSeconds == null ? Long.MIN_VALUE : value.readinessClockDeltaSeconds;
             long afterReady = value.readyToCompleteDeltaSeconds == null ? Long.MIN_VALUE : value.readyToCompleteDeltaSeconds;
@@ -348,7 +358,7 @@ final class PerformanceAnalyzer {
         List<String> cached = cache.get(id);
         if (cached != null) return new ArrayList<String>(cached);
         Models.AnalysisTaskMetric metric = metricsByFab.get(id);
-        boolean stop = id.equals(startFabId) || isLevel20(current.task) || current.readinessDrivers.isEmpty() ||
+        boolean stop = id.equals(startFabId) || isLevel40(current.task) || current.readinessDrivers.isEmpty() ||
             metric == null || metric.completionDelaySeconds == null || metric.completionDelaySeconds <= 0;
         List<String> result = new ArrayList<String>();
         if (stop || !visiting.add(id)) {
@@ -379,7 +389,7 @@ final class PerformanceAnalyzer {
             List<String> values = upstream.get(id);
             if (values != null) for (String dependency : values) {
                 TaskSnapshot candidate = day.byFab.get(dependency);
-                if (candidate != null && !isLevel20(candidate.task) && candidate.completedAt != null &&
+                if (candidate != null && level(candidate.task) >= 40 && candidate.completedAt != null &&
                     (latest == null || candidate.completedAt.after(latest.completedAt))) latest = candidate;
             }
             current = latest;
@@ -400,7 +410,7 @@ final class PerformanceAnalyzer {
         List<String> values = upstream.get(current);
         if (values != null) for (String dependency : values) {
             TaskSnapshot task = day.byFab.get(dependency);
-            if (task != null && !isLevel20(task.task) && reachesStart(dependency, start, day, upstream, visiting)) return true;
+            if (task != null && level(task.task) >= 40 && reachesStart(dependency, start, day, upstream, visiting)) return true;
         }
         visiting.remove(current);
         return false;
@@ -462,7 +472,7 @@ final class PerformanceAnalyzer {
                 UiFormat.dateTime(result.expectedFinish) + "，无法判断整体完成时刻";
         } else {
             result.summary = result.analysisDate + " 的结束作业尚未完成；启动对齐应完成时间 " + UiFormat.dateTime(result.expectedFinish) +
-                "；纯 R 分析不估算完成时间，暂时无法判断整体 delay";
+                etaSummary(result.eta) + "；ETA 仅供 Checkpoint，不作为正式 delay 判定";
         }
         result.detail = "区间：" + result.startTaskLabel + " → " + result.endTaskLabel +
             "；纯 R 口径：整体只比较结束作业完成时刻；批次内部以启动作业真实 R 对齐；任务完成偏移 = 依赖就绪偏移 + 就绪后完成间隔差。" +
@@ -473,6 +483,17 @@ final class PerformanceAnalyzer {
             (bottleneck == null ? "。" : "；优先人工核对：" + bottleneck.fabId + "（" + bottleneck.recommendation + "）。") +
             "关注阈值 " + result.attentionThresholdSeconds + " 秒；可比较 " + result.completionOnlyCount +
             "，数据不足或有歧义 " + result.insufficientCount + "。所有归因均为时间区间定位，不自动认定具体原因。";
+        if (!target.complete && result.eta != null && result.eta.detail != null && !result.eta.detail.isEmpty())
+            result.detail += " 纯R ETA：" + result.eta.detail;
+    }
+
+    private static String etaSummary(Models.DagEta eta) {
+        if (eta == null) return "；纯 R ETA 未计算";
+        if (eta.available) return "；纯 R ETA P50 " + UiFormat.dateTime(eta.estimatedCompletion) +
+            "，P75 " + UiFormat.dateTime(eta.conservativeCompletion) +
+            "，下一个 Checkpoint " + UiFormat.dateTime(eta.nextCheckpoint);
+        if (eta.lowerBound) return "；仅有已知路径下限 " + UiFormat.dateTime(eta.estimatedCompletion) + "，不生成完整 ETA";
+        return "；无法生成可靠 ETA（" + eta.detail + "）";
     }
 
     private static boolean includeMetric(Models.AnalysisTaskMetric metric, Models.AnalysisRequest request) {
@@ -505,7 +526,7 @@ final class PerformanceAnalyzer {
 
     private static void resolveReadiness(TaskSnapshot task, DaySnapshot day,
                                          List<Models.Dependency> dependencies) {
-        if (task == null || isLevel20(task.task)) return;
+        if (task == null || level(task.task) <= 40) return;
         boolean hasDependency = false, incomplete = false;
         int eligible = 0;
         Date latest = null;
@@ -518,7 +539,9 @@ final class PerformanceAnalyzer {
                 continue;
             }
             TaskSnapshot dependency = matches == null || matches.isEmpty() ? null : matches.get(0);
-            if (dependency != null && isLevel20(dependency.task)) { task.readinessPartial = true; continue; }
+            if (dependency != null && level(dependency.task) < 40) {
+                incomplete = true; task.incompleteDependencies.add(edge.dependencyId + "（Level 小于 40）"); continue;
+            }
             eligible++;
             if (dependency == null || dependency.completedAt == null) {
                 incomplete = true;
@@ -592,7 +615,8 @@ final class PerformanceAnalyzer {
     private static long time(Date value) { return value == null ? Long.MIN_VALUE : value.getTime(); }
     private static Date copy(Date value) { return value == null ? null : new Date(value.getTime()); }
     private static String normalize(String value) { return value == null ? "" : value.trim().toUpperCase(Locale.ROOT); }
-    private static boolean isLevel20(Models.TaskKey task) { return task != null && "20".equals(normalize(task.levelNo)); }
+    private static boolean isLevel40(Models.TaskKey task) { return task != null && "40".equals(normalize(task.levelNo)); }
+    private static int level(Models.TaskKey task) { try { return Integer.parseInt(normalize(task.levelNo)); } catch (Exception e) { return Integer.MIN_VALUE; } }
     private static String groupKey(Models.TaskKey value) { return groupKey(value.threadId, value.levelNo, value.fabId); }
     private static String groupKey(String thread, String level, String fab) { return normalize(thread) + "|" + normalize(level) + "|" + normalize(fab); }
     private static String taskLabel(String thread, String level, String fab) { return thread + "/" + level + "/" + fab; }

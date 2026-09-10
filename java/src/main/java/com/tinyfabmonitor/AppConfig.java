@@ -29,6 +29,7 @@ final class AppConfig {
     final int pollIntervalMaxMinutes;
     final int dagUpstreamLevels;
     final int dagDownstreamLevels;
+    final int etaManualInterventionMinutes;
     final String analysisStartThreadId;
     final String analysisStartLevelNo;
     final String analysisStartFabId;
@@ -67,14 +68,22 @@ final class AppConfig {
         }
         dagUpstreamLevels = rangedInt(p, "monitor.dag_upstream_levels", 5, 0, 15);
         dagDownstreamLevels = rangedInt(p, "monitor.dag_downstream_levels", 5, 0, 15);
+        etaManualInterventionMinutes = rangedInt(p, "monitor.eta_manual_intervention_minutes", 30, 1, 1440);
         analysisStartThreadId = trim(p.getProperty("monitor.analysis_start_thread_id"));
         analysisStartLevelNo = trim(p.getProperty("monitor.analysis_start_level_no"));
         analysisStartFabId = trim(p.getProperty("monitor.analysis_start_fab_id"));
         analysisEndThreadId = trim(p.getProperty("monitor.analysis_end_thread_id"));
         analysisEndLevelNo = trim(p.getProperty("monitor.analysis_end_level_no"));
         analysisEndFabId = trim(p.getProperty("monitor.analysis_end_fab_id"));
-        validateOptionalTask("开始基准任务", analysisStartThreadId, analysisStartLevelNo, analysisStartFabId);
-        validateOptionalTask("结束基准任务", analysisEndThreadId, analysisEndLevelNo, analysisEndFabId);
+        validateOptionalTask("批次启动作业", analysisStartThreadId, analysisStartLevelNo, analysisStartFabId);
+        validateOptionalTask("批次结束作业", analysisEndThreadId, analysisEndLevelNo, analysisEndFabId);
+        if (!analysisStartFabId.isEmpty() && !"40".equals(analysisStartLevelNo))
+            throw new IllegalArgumentException("monitor.analysis_start_level_no 必须是 40");
+        if (!analysisEndFabId.isEmpty()) {
+            try {
+                if (Integer.parseInt(analysisEndLevelNo) < 40) throw new IllegalArgumentException("monitor.analysis_end_level_no 不能小于 40");
+            } catch (NumberFormatException e) { throw new IllegalArgumentException("monitor.analysis_end_level_no 必须是整数"); }
+        }
         String storage = trim(p.getProperty("storage.directory"));
         if (storage.isEmpty()) storage = "data";
         Path configured = java.nio.file.Paths.get(storage);

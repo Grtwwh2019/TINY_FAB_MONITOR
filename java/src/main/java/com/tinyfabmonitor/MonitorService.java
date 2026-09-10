@@ -374,9 +374,15 @@ final class MonitorService implements AutoCloseable {
         }
         Collections.sort(dashboard.recentRuns, (a, b) -> eventTime(b).compareTo(eventTime(a)));
         if (dashboard.recentRuns.size() > 200) dashboard.recentRuns = new ArrayList<Models.RunRecord>(dashboard.recentRuns.subList(0, 200));
-        TimingStatistics.apply(dashboard.tasks, state.tracked.values(), state.runs, dashboard.etaUpstreamDependencies);
+        List<List<Models.OracleTask>> cachedDays = new ArrayList<List<Models.OracleTask>>();
+        synchronized (lock) {
+            for (List<Models.OracleTask> day : analysisTaskCache.values()) cachedDays.add(new ArrayList<Models.OracleTask>(day));
+        }
+        TimingStatistics.apply(dashboard.tasks, state.tracked.values(), state.runs,
+            dashboard.etaUpstreamDependencies, cachedDays);
         if (!dashboard.dagRootFabId.isEmpty() && !dashboard.dagLoading && dashboard.dagError.isEmpty()) {
-            dashboard.dagEta = EtaCalculator.calculate(dashboard.dagRootFabId, dashboard.tasks, dashboard.etaUpstreamDependencies, now);
+            dashboard.dagEta = EtaCalculator.calculate(dashboard.dagRootFabId, dashboard.tasks,
+                dashboard.etaUpstreamDependencies, now, dashboard.nextPollAt, config.etaManualInterventionMinutes);
         }
         return dashboard;
     }
@@ -408,7 +414,8 @@ final class MonitorService implements AutoCloseable {
         analysisExecutor.execute(() -> {
             try {
                 logger.info("开始耗时分析：" + request.analysisDate + "，模式 " + request.baselineMode);
-                List<Models.RunRecord> analysisRuns = store.snapshot().runs;
+                Models.PersistedState persisted = store.snapshot();
+                List<Models.RunRecord> analysisRuns = persisted.runs;
                 Map<String, List<Models.OracleTask>> tasksByDate = new LinkedHashMap<String, List<Models.OracleTask>>();
                 List<String> baselineDates;
                 List<Models.Dependency> analysisDependencies;
@@ -446,8 +453,23 @@ final class MonitorService implements AutoCloseable {
                         analysisDependencies = dependencySnapshot(connection);
                     } finally { connection.close(); }
                 } finally { databaseReadPermit.release(); }
+                Date analysisNow = new Date();
+                List<Models.TaskView> etaTasks = new ArrayList<Models.TaskView>();
+                for (Models.OracleTask task : tasksByDate.get(request.analysisDate)) etaTasks.add(viewOf(task));
+                List<List<Models.OracleTask>> etaHistory = new ArrayList<List<Models.OracleTask>>(tasksByDate.values());
+                synchronized (lock) {
+                    for (List<Models.OracleTask> day : analysisTaskCache.values()) etaHistory.add(new ArrayList<Models.OracleTask>(day));
+                }
+                TimingStatistics.apply(etaTasks, persisted.tracked.values(), analysisRuns, analysisDependencies, etaHistory);
+                Date checkpointRefresh;
+                synchronized (lock) {
+                    checkpointRefresh = request.analysisDate.equals(processDate) && nextPollAt != null ? copy(nextPollAt) :
+                        new Date(analysisNow.getTime() + TimeUnit.MINUTES.toMillis(config.pollIntervalMaxMinutes));
+                }
+                Models.DagEta targetEta = EtaCalculator.calculate(request.endFabId, etaTasks,
+                    analysisDependencies, analysisNow, checkpointRefresh, config.etaManualInterventionMinutes);
                 Models.AnalysisResult result = PerformanceAnalyzer.analyze(request, tasksByDate, analysisRuns,
-                    analysisDependencies, baselineDates, new Date());
+                    analysisDependencies, baselineDates, analysisNow, targetEta);
                 synchronized (lock) {
                     if (analysisState.requestId == requestId) {
                         analysisState.loading = false; analysisState.error = ""; analysisState.result = result;
@@ -526,7 +548,10 @@ final class MonitorService implements AutoCloseable {
             taskIdentity(request.endThreadId, request.endLevelNo, request.endFabId))) {
             throw new IllegalArgumentException("启动作业和结束作业不能相同");
         }
-        if ("20".equals(normalize(request.endLevelNo))) throw new IllegalArgumentException("Level 20 循环 Poll 作业不能作为批次结束作业");
+        if (!"40".equals(normalize(request.startLevelNo))) throw new IllegalArgumentException("批次启动作业必须是 Level 40");
+        try {
+            if (Integer.parseInt(normalize(request.endLevelNo)) < 40) throw new IllegalArgumentException("批次结束作业 Level 不能小于 40");
+        } catch (NumberFormatException e) { throw new IllegalArgumentException("批次结束作业 Level No 必须是整数"); }
     }
 
     private static void validateBoundaryTask(String label, String threadId, String levelNo, String fabId) {

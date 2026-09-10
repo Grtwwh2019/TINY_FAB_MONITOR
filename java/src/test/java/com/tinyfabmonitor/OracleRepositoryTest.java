@@ -55,6 +55,7 @@ public class OracleRepositoryTest {
         assertEquals(5, appConfig.dagDownstreamLevels);
         assertEquals(5, appConfig.pollIntervalMinMinutes);
         assertEquals(5, appConfig.pollIntervalMaxMinutes);
+        assertEquals(30, appConfig.etaManualInterventionMinutes);
         String sql = new OracleRepository(appConfig).taskSqlForTest().toLowerCase(Locale.ROOT);
         org.junit.Assert.assertTrue(sql.contains("p.prcss_dt=to_date(?,'yyyymmdd')"));
         org.junit.Assert.assertFalse(sql.contains("lvl_no between"));

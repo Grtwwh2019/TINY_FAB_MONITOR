@@ -442,10 +442,14 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
         runningMetric.setText(String.valueOf(running)); completedMetric.setText(String.valueOf(completed)); anomalyMetric.setText(String.valueOf(anomalies)); historyMetric.setText(String.valueOf(dashboard.totalHistoricalRuns));
         updateStatusOptions(dashboard.tasks);
         taskModel.setRows(dashboard.tasks); historyModel.setRows(dashboard.recentRuns); dag.setDashboard(dashboard);
-        if (dashboard.dagLoading) { dagEta.setText("预计完成：正在读取完整上游依赖…"); dagEta.setToolTipText(null); }
-        else if (!dashboard.dagError.isEmpty()) { dagEta.setText("预计完成：依赖读取失败"); dagEta.setToolTipText(dashboard.dagError); }
-        else if (dashboard.dagRootFabId.isEmpty()) { dagEta.setText("预计完成：请先搜索中心 FAB"); dagEta.setToolTipText(null); }
-        else { dagEta.setText(dashboard.dagEta.summary); dagEta.setToolTipText(dashboard.dagEta.detail); }
+        if (dashboard.dagLoading) { dagEta.setText("预计完成：正在读取完整上游依赖…"); dagEta.setToolTipText(null); dagEta.setForeground(new Color(22, 93, 255)); }
+        else if (!dashboard.dagError.isEmpty()) { dagEta.setText("预计完成：依赖读取失败"); dagEta.setToolTipText(dashboard.dagError); dagEta.setForeground(new Color(190, 35, 35)); }
+        else if (dashboard.dagRootFabId.isEmpty()) { dagEta.setText("预计完成：请先搜索中心 FAB"); dagEta.setToolTipText(null); dagEta.setForeground(new Color(22, 93, 255)); }
+        else {
+            dagEta.setText(dashboard.dagEta.summary); dagEta.setToolTipText(dashboard.dagEta.detail);
+            dagEta.setForeground(dashboard.dagEta.manualInterventionRequired || dashboard.dagEta.historicalRangeExceeded ?
+                new Color(190, 35, 35) : new Color(22, 93, 255));
+        }
         renderAnalysis(dashboard.analysis);
         if (!dashboard.dagLoading && dashboard.dagError.isEmpty() && !dashboard.dagRootFabId.isEmpty() && centeredDagRequestId != dashboard.dagRequestId) {
             centeredDagRequestId = dashboard.dagRequestId;
@@ -457,7 +461,9 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
         analysisRun.setEnabled(!state.loading);
         if (state.loading) { analysisSummary.setText("正在读取数据库并分析，请稍候…"); analysisDetail.setText("分析不会加入自动刷新，也不会并发执行第二次分析。"); return; }
         if (!state.error.isEmpty()) { analysisSummary.setText("分析失败：" + state.error); analysisSummary.setForeground(new Color(190, 35, 35)); return; }
-        analysisSummary.setForeground(new Color(22, 93, 255));
+        analysisSummary.setForeground(state.result != null && state.result.eta != null &&
+            (state.result.eta.manualInterventionRequired || state.result.eta.historicalRangeExceeded) ?
+            new Color(190, 35, 35) : new Color(22, 93, 255));
         if (state.result == null || state.result.analysisDate.isEmpty()) return;
         analysisSummary.setText(state.result.summary); analysisDetail.setText(state.result.detail);
         if (renderedAnalysisRequestId != state.requestId) {

@@ -13,34 +13,33 @@ import static org.junit.Assert.assertTrue;
 
 public class TimingStatisticsTest {
     @Test public void usesMedianAndBuildsReadyToRFromPersistedFinalRTimes() {
-        Models.TaskView a = view("20260103", "A", "41", "R", 5000000);
+        Models.TaskView a = view("20260103", "A", "40", "R", 5000000);
         Models.TaskView b = view("20260103", "B", "41", "W", 0);
         List<Models.TrackedTask> history = Arrays.asList(
-            tracked("20260101", "A", "41", 1000000), tracked("20260101", "B", "41", 1120000),
-            tracked("20260102", "A", "41", 2000000), tracked("20260102", "B", "41", 2600000));
+            tracked("20260101", "A", "40", 1000000), tracked("20260101", "B", "41", 1120000),
+            tracked("20260102", "A", "40", 2000000), tracked("20260102", "B", "41", 2600000));
         List<Models.RunRecord> runs = Arrays.asList(run("20260101", "B", 0, 10), run("20260102", "B", 0, 1000), run("20251231", "B", 0, 20));
         TimingStatistics.apply(Arrays.asList(a, b), history, runs,
             Arrays.asList(new Models.Dependency("B", "A")));
         assertEquals(360L, b.readyToCompleteTypicalSeconds);
         assertEquals(2, b.readyToCompleteSampleCount);
+        assertEquals(600L, b.readyToCompleteP75Seconds);
         assertEquals(20L, b.executionTypicalSeconds);
         assertEquals(3, b.executionTypicalSampleCount);
         assertFalse(b.readinessPartial);
     }
 
-    @Test public void level20StopsItsBranchButKeepsOtherBranchAsPartialEvidence() {
+    @Test public void levelBelow40InvalidatesReadinessAndHistoricalSample() {
         Models.TaskView poll = view("20260103", "POLL", "20", "R", 3000000);
-        Models.TaskView a = view("20260103", "A", "41", "R", 4000000);
+        Models.TaskView a = view("20260103", "A", "40", "R", 4000000);
         Models.TaskView b = view("20260103", "B", "41", "R", 4500000);
         List<Models.TrackedTask> history = Arrays.asList(
-            tracked("20260101", "POLL", "20", 900000), tracked("20260101", "A", "41", 1000000), tracked("20260101", "B", "41", 1300000));
+            tracked("20260101", "POLL", "20", 900000), tracked("20260101", "A", "40", 1000000), tracked("20260101", "B", "41", 1300000));
         TimingStatistics.apply(Arrays.asList(poll, a, b), history, Collections.<Models.RunRecord>emptyList(),
             Arrays.asList(new Models.Dependency("B", "POLL"), new Models.Dependency("B", "A")));
-        assertEquals(4000000L, b.readinessAt.getTime());
-        assertEquals(Long.valueOf(500), b.readyToCompleteSeconds);
-        assertEquals(300L, b.readyToCompleteTypicalSeconds);
-        assertTrue(b.readinessPartial);
-        assertTrue(b.hasLevel20Upstream);
+        assertEquals(null, b.readinessAt);
+        assertEquals(0, b.readyToCompleteSampleCount);
+        assertTrue(b.readinessIssues.get(0).contains("Level 小于 40"));
     }
 
     @Test public void confidenceReflectsAvailableSampleCount() {

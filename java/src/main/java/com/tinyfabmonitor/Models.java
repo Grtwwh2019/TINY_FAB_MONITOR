@@ -87,12 +87,52 @@ final class Models {
         boolean lowerBound;
         boolean overdue;
         Date estimatedCompletion;
+        Date conservativeCompletion;
+        Date nextCheckpoint;
+        Date manualInterventionAt;
         long remainingSeconds;
+        long elapsedSinceReadinessSeconds;
+        long historicalMinimumSeconds;
+        long historicalMaximumSeconds;
         int sampleCount;
+        int conditionalSampleCount;
+        boolean historicalRangeExceeded;
+        boolean manualInterventionRequired;
         String confidence = "";
         String summary = "";
         String detail = "";
         List<String> criticalPath = new ArrayList<String>();
+        List<String> criticalPaths = new ArrayList<String>();
+        List<String> checkpointTasks = new ArrayList<String>();
+        List<String> issues = new ArrayList<String>();
+        Map<String, TaskEta> taskEtas = new LinkedHashMap<String, TaskEta>();
+    }
+
+    static class TaskEta {
+        String fabId = "";
+        boolean available;
+        boolean completed;
+        boolean boundary;
+        boolean ready;
+        boolean checkpoint;
+        boolean historicalRangeExceeded;
+        boolean manualInterventionRequired;
+        Date readinessAt;
+        Date p50Completion;
+        Date p75Completion;
+        Date nextCheckpoint;
+        Date manualInterventionAt;
+        long elapsedSeconds;
+        long p50Seconds;
+        long p75Seconds;
+        long minimumSeconds;
+        long maximumSeconds;
+        int sampleCount;
+        int conditionalSampleCount;
+        String confidence = "";
+        String readinessDriver = "";
+        String reason = "";
+        List<String> paths = new ArrayList<String>();
     }
 
     enum AnalysisBaselineMode { PREVIOUS_COMPLETE, SPECIFIED_DATE, RECENT_AVERAGE }
@@ -178,6 +218,7 @@ final class Models {
         String endTaskLabel = "";
         String summary = "";
         String detail = "";
+        DagEta eta = new DagEta();
         List<AnalysisTaskMetric> rows = new ArrayList<AnalysisTaskMetric>();
         List<AnalysisTaskMetric> allRows = new ArrayList<AnalysisTaskMetric>();
         List<Dependency> dependencies = new ArrayList<Dependency>();
@@ -210,6 +251,15 @@ final class Models {
         public Long readyToCompleteSeconds;
         public long readyToCompleteTypicalSeconds;
         public int readyToCompleteSampleCount;
+        public long readyToCompleteP75Seconds;
+        public long readyToCompleteMinimumSeconds;
+        public long readyToCompleteMaximumSeconds;
+        public String readyToCompleteConfidence = "";
+        public String readyToCompleteVolatility = "";
+        public List<Long> readyToCompleteSamples = new ArrayList<Long>();
+        public List<String> readinessDrivers = new ArrayList<String>();
+        public List<String> readinessIssues = new ArrayList<String>();
+        public boolean dependencyMappingAmbiguous;
         public boolean readinessPartial;
         public boolean hasLevel20Upstream;
         public List<Date> anomalyTimes = new ArrayList<Date>();

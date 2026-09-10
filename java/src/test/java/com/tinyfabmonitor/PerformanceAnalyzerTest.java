@@ -112,7 +112,7 @@ public class PerformanceAnalyzerTest {
         assertFalse(b.ambiguousDependencies.isEmpty());
     }
 
-    @Test public void level20DependencyIsCutOffButOtherDependencyStillDrivesReadiness() {
+    @Test public void levelBelow40MakesReadinessIncomplete() {
         Models.OracleTask poll = task("20260102", "POLL", "R", 1800); poll.levelNo = "20";
         Models.OracleTask oldPoll = task("20260101", "POLL", "R", 700); oldPoll.levelNo = "20";
         List<Models.Dependency> edges = Arrays.asList(new Models.Dependency("B", "POLL"), new Models.Dependency("B", "A"));
@@ -121,8 +121,9 @@ public class PerformanceAnalyzerTest {
             tasks("20260101", task("20260101", "A", "R", 500), oldPoll, task("20260101", "B", "R", 1500))),
             edges, "20260102", "20260101");
         Models.AnalysisTaskMetric b = find(result, "B");
-        assertEquals(dateAt("20260102", 1000), b.readinessAt);
-        assertTrue(b.readinessPartial);
+        assertNull(b.readinessAt);
+        assertEquals("依赖R不完整", b.dataQuality);
+        assertTrue(b.incompleteDependencies.get(0).contains("Level 小于 40"));
     }
 
     @Test public void placeholderRIsInvalid() {
@@ -181,7 +182,7 @@ public class PerformanceAnalyzerTest {
     private static Models.AnalysisRequest request(String target) {
         Models.AnalysisRequest request = new Models.AnalysisRequest(); request.analysisDate = target;
         request.baselineMode = Models.AnalysisBaselineMode.SPECIFIED_DATE;
-        request.startThreadId = "T"; request.startLevelNo = "41"; request.startFabId = "A";
+        request.startThreadId = "T"; request.startLevelNo = "40"; request.startFabId = "A";
         request.endThreadId = "T"; request.endLevelNo = "41"; request.endFabId = "B";
         return request;
     }
@@ -197,7 +198,7 @@ public class PerformanceAnalyzerTest {
         throw new AssertionError("Missing " + fab);
     }
     private static Models.OracleTask task(String date, String fab, String status, long at) {
-        Models.OracleTask task = new Models.OracleTask(); task.processDate = date; task.threadId = "T"; task.levelNo = "41";
+        Models.OracleTask task = new Models.OracleTask(); task.processDate = date; task.threadId = "T"; task.levelNo = "A".equals(fab) ? "40" : "41";
         task.fabId = fab; task.status = status; task.actTime = dateAt(date, at); return task;
     }
     private static Date dateAt(String processDate, long seconds) {
