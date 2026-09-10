@@ -548,7 +548,9 @@ final class MonitorService implements AutoCloseable {
             taskIdentity(request.endThreadId, request.endLevelNo, request.endFabId))) {
             throw new IllegalArgumentException("启动作业和结束作业不能相同");
         }
-        if (!"40".equals(normalize(request.startLevelNo))) throw new IllegalArgumentException("批次启动作业必须是 Level 40");
+        try {
+            if (Integer.parseInt(normalize(request.startLevelNo)) < 40) throw new IllegalArgumentException("批次启动作业 Level 不能小于 40");
+        } catch (NumberFormatException e) { throw new IllegalArgumentException("批次启动作业 Level No 必须是整数"); }
         try {
             if (Integer.parseInt(normalize(request.endLevelNo)) < 40) throw new IllegalArgumentException("批次结束作业 Level 不能小于 40");
         } catch (NumberFormatException e) { throw new IllegalArgumentException("批次结束作业 Level No 必须是整数"); }

@@ -76,7 +76,7 @@ final class PerformanceAnalyzer {
         if (day.startTask == null) return "分析日期找不到启动作业";
         if (day.endTask == null) return "分析日期找不到结束作业";
         if (groupKey(day.startTask.task).equals(groupKey(day.endTask.task))) return "启动作业和结束作业不能相同";
-        if (!isLevel40(day.startTask.task)) return "批次启动作业必须是 Level 40";
+        if (level(day.startTask.task) < 40) return "批次启动作业 Level 不能小于 40";
         if (level(day.endTask.task) < 40) return "批次结束作业 Level 不能小于 40";
         if (day.startTask.completedAt == null) {
             String cause = day.startTask.task.actTimePlaceholder ? "R 时间是占位值" : "尚未进入 R 或没有有效 R 时间";
@@ -245,12 +245,12 @@ final class PerformanceAnalyzer {
         if (day.endTask == null) throw new IllegalArgumentException("分析日期找不到结束作业");
         if (groupKey(day.startTask.task).equals(groupKey(day.endTask.task))) throw new IllegalArgumentException("启动作业和结束作业不能相同");
         if (level(day.endTask.task) < 40) throw new IllegalArgumentException("批次结束作业 Level 不能小于 40");
-        if (!isLevel40(day.startTask.task)) throw new IllegalArgumentException("批次启动作业必须是 Level 40");
+        if (level(day.startTask.task) < 40) throw new IllegalArgumentException("批次启动作业 Level 不能小于 40");
     }
 
     private static void requireRAnchor(DaySnapshot day, boolean target) {
         if (day.startTask == null) throw new IllegalArgumentException(dayLabel(day, target) + "找不到启动作业");
-        if (!isLevel40(day.startTask.task)) throw new IllegalArgumentException(dayLabel(day, target) + "的启动作业必须是 Level 40");
+        if (level(day.startTask.task) < 40) throw new IllegalArgumentException(dayLabel(day, target) + "的启动作业 Level 不能小于 40");
         if (day.startTask.completedAt == null) {
             String cause = day.startTask.task.actTimePlaceholder ? "R 时间是占位值" : "尚未进入 R 或没有有效 R 时间";
             throw new IllegalArgumentException(dayLabel(day, target) + "的启动作业缺少真实 R 时间（" + cause + "），请切换日期或启动作业");
@@ -263,7 +263,7 @@ final class PerformanceAnalyzer {
         if (level(day.endTask.task) < 40) return "结束作业 Level 不能小于 40";
         if (!"R".equalsIgnoreCase(day.endTask.task.status)) return "结束作业状态不是 R";
         if (day.finish == null) return day.endTask.task.actTimePlaceholder ? "结束作业 R 时间是占位值" : "结束作业没有有效 R 时间";
-        if (!isLevel40(day.startTask.task)) return "启动作业必须是 Level 40";
+        if (level(day.startTask.task) < 40) return "启动作业 Level 不能小于 40";
         if (day.startTask.completedAt == null) return day.startTask.task.actTimePlaceholder ?
             "启动作业 R 时间是占位值" : "启动作业没有真实 R 时间";
         if (day.finish.before(day.startTask.completedAt)) return "结束作业 R 时间早于启动作业 R 时间";
@@ -478,7 +478,7 @@ final class PerformanceAnalyzer {
             "；纯 R 口径：整体只比较结束作业完成时刻；批次内部以启动作业真实 R 对齐；任务完成偏移 = 依赖就绪偏移 + 就绪后完成间隔差。" +
             "启动作业真实 R：" + UiFormat.dateTime(result.targetStart) +
             "；基准：" + result.baselineLabel + "（基准批次耗时 " + UiFormat.duration(result.baselineDurationSeconds) +
-            "，业务完成时刻 " + baselineClock + "）" +
+            "，业务完成时刻 " + baselineClock + "；实际采用日期 " + join(result.baselineDates, "、") + "）" +
             (result.dependencyPathComplete ? "" : "；启动与结束作业在当前依赖数据中不连通，慢点路径可能不完整") +
             (bottleneck == null ? "。" : "；优先人工核对：" + bottleneck.fabId + "（" + bottleneck.recommendation + "）。") +
             "关注阈值 " + result.attentionThresholdSeconds + " 秒；可比较 " + result.completionOnlyCount +

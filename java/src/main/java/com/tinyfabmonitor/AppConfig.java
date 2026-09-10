@@ -77,8 +77,11 @@ final class AppConfig {
         analysisEndFabId = trim(p.getProperty("monitor.analysis_end_fab_id"));
         validateOptionalTask("批次启动作业", analysisStartThreadId, analysisStartLevelNo, analysisStartFabId);
         validateOptionalTask("批次结束作业", analysisEndThreadId, analysisEndLevelNo, analysisEndFabId);
-        if (!analysisStartFabId.isEmpty() && !"40".equals(analysisStartLevelNo))
-            throw new IllegalArgumentException("monitor.analysis_start_level_no 必须是 40");
+        if (!analysisStartFabId.isEmpty()) {
+            try {
+                if (Integer.parseInt(analysisStartLevelNo) < 40) throw new IllegalArgumentException("monitor.analysis_start_level_no 不能小于 40");
+            } catch (NumberFormatException e) { throw new IllegalArgumentException("monitor.analysis_start_level_no 必须是整数"); }
+        }
         if (!analysisEndFabId.isEmpty()) {
             try {
                 if (Integer.parseInt(analysisEndLevelNo) < 40) throw new IllegalArgumentException("monitor.analysis_end_level_no 不能小于 40");

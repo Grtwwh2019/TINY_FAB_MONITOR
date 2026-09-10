@@ -19,6 +19,22 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public class PerformanceAnalyzerTest {
+    @Test public void startTaskAllowsAnyLevelAtLeast40() {
+        Models.OracleTask targetStart = task("20260102", "A", "R", 1000); targetStart.levelNo = "41";
+        Models.OracleTask baselineStart = task("20260101", "A", "R", 500); baselineStart.levelNo = "41";
+        Map<String, List<Models.OracleTask>> values = days(
+            tasks("20260102", targetStart, task("20260102", "B", "R", 2000)),
+            tasks("20260101", baselineStart, task("20260101", "B", "R", 1500)));
+        Models.AnalysisRequest request = request("20260102"); request.startLevelNo = "41";
+        Models.AnalysisResult result = PerformanceAnalyzer.analyze(request, values, new ArrayList<Models.RunRecord>(),
+            noEdges(), Arrays.asList("20260101"), dateAt("20260102", 10000));
+        assertTrue(result.targetComplete);
+
+        targetStart.levelNo = "39"; baselineStart.levelNo = "39"; request.startLevelNo = "39";
+        assertTrue(PerformanceAnalyzer.targetIssue(request, "20260102", values.get("20260102"),
+            new ArrayList<Models.RunRecord>()).contains("不能小于 40"));
+    }
+
     @Test public void overallDelayUsesOnlyEndTaskRClock() {
         Models.AnalysisResult result = analyze(days(
             tasks("20260102", task("20260102", "A", "R", 1000), task("20260102", "B", "R", 2000)),

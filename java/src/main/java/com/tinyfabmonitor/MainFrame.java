@@ -76,7 +76,15 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
     private final JLabel dagEta = new JLabel("预计完成：请先搜索中心 FAB");
     private final JTextField retentionDays = new JTextField("14", 4);
     private final JTextField analysisDate = new JTextField(8);
+    private static final String BASELINE_SPECIFIED = "指定单个日期";
+    private static final String BASELINE_PREVIOUS = "前一个完整日期";
+    private static final String BASELINE_RECENT = "最近多个完整日期";
+    private final JComboBox<String> analysisBaselineMode = new JComboBox<String>(
+        new String[]{BASELINE_SPECIFIED, BASELINE_PREVIOUS, BASELINE_RECENT});
+    private final JLabel analysisBaselineDateLabel = new JLabel("基准日期：");
     private final JTextField analysisBaselineDate = new JTextField(8);
+    private final JLabel analysisRecentCountLabel = new JLabel("历史日期数：");
+    private final JTextField analysisRecentDateCount = new JTextField("7", 3);
     private final JTextField analysisAttentionThreshold = new JTextField("30", 4);
     private final JTextField analysisThread = new JTextField(7);
     private final JTextField analysisLevelMin = new JTextField(3);
@@ -117,6 +125,7 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
         analysisEndLevel.setText(monitor.defaultAnalysisEndLevelNo());
         analysisEndFab.setText(monitor.defaultAnalysisEndFabId());
         setContentPane(buildContent());
+        updateAnalysisBaselineInputs();
         dag.setShowDagAction(this::requestDag);
         taskTable.setRowSorter(taskSorter);
         historyTable.setRowSorter(historySorter);
@@ -193,19 +202,26 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
 
     private JPanel analysisPanel() {
         JPanel panel = new JPanel(new BorderLayout(0, 8)); panel.setBorder(new EmptyBorder(8, 8, 8, 8));
-        JPanel controls = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
-        controls.add(new JLabel("分析日期：")); controls.add(analysisDate); controls.add(new JLabel("基准日期：")); controls.add(analysisBaselineDate);
-        controls.add(new JLabel("关注阈值(秒)：")); controls.add(analysisAttentionThreshold);
-        controls.add(new JLabel("Thread：")); controls.add(analysisThread); controls.add(new JLabel("Level：")); controls.add(analysisLevelMin);
-        controls.add(new JLabel("至")); controls.add(analysisLevelMax); controls.add(analysisRun);
-        JButton help = new JButton("指标说明"); help.addActionListener(e -> showTextDialog("耗时分析指标说明", AnalysisUiText.help(), 28, 78)); controls.add(help);
-        analysisCriticalOnly.setOpaque(false); analysisCriticalOnly.addActionListener(e -> analysisDag.setCriticalOnly(analysisCriticalOnly.isSelected())); controls.add(analysisCriticalOnly);
+        JPanel baselineControls = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        baselineControls.add(new JLabel("分析日期：")); baselineControls.add(analysisDate);
+        baselineControls.add(new JLabel("基准方式：")); baselineControls.add(analysisBaselineMode);
+        baselineControls.add(analysisBaselineDateLabel); baselineControls.add(analysisBaselineDate);
+        baselineControls.add(analysisRecentCountLabel); baselineControls.add(analysisRecentDateCount);
+        JLabel baselineHint = new JLabel("只使用结束作业已完成且启动作业有真实 R 的历史日期");
+        baselineHint.setForeground(new Color(92, 106, 120)); baselineControls.add(baselineHint);
+        analysisBaselineMode.addActionListener(e -> updateAnalysisBaselineInputs());
+        JPanel filterControls = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        filterControls.add(new JLabel("关注阈值(秒)：")); filterControls.add(analysisAttentionThreshold);
+        filterControls.add(new JLabel("Thread：")); filterControls.add(analysisThread); filterControls.add(new JLabel("Level：")); filterControls.add(analysisLevelMin);
+        filterControls.add(new JLabel("至")); filterControls.add(analysisLevelMax); filterControls.add(analysisRun);
+        JButton help = new JButton("指标说明"); help.addActionListener(e -> showTextDialog("耗时分析指标说明", AnalysisUiText.help(), 28, 78)); filterControls.add(help);
+        analysisCriticalOnly.setOpaque(false); analysisCriticalOnly.addActionListener(e -> analysisDag.setCriticalOnly(analysisCriticalOnly.isSelected())); filterControls.add(analysisCriticalOnly);
         analysisRun.addActionListener(e -> startAnalysis());
         JPanel boundaries = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
         boundaries.add(new JLabel("批次启动作业  Thread：")); boundaries.add(analysisStartThread); boundaries.add(new JLabel("Level：")); boundaries.add(analysisStartLevel);
         boundaries.add(new JLabel("FAB：")); boundaries.add(analysisStartFab); boundaries.add(new JLabel("  →  批次结束作业  Thread：")); boundaries.add(analysisEndThread);
         boundaries.add(new JLabel("Level：")); boundaries.add(analysisEndLevel); boundaries.add(new JLabel("FAB：")); boundaries.add(analysisEndFab);
-        JPanel inputRows = new JPanel(new GridLayout(2, 1, 0, 4)); inputRows.add(controls); inputRows.add(boundaries);
+        JPanel inputRows = new JPanel(new GridLayout(3, 1, 0, 4)); inputRows.add(baselineControls); inputRows.add(filterControls); inputRows.add(boundaries);
         JPanel header = new JPanel(new BorderLayout(0, 6)); header.add(inputRows, BorderLayout.NORTH);
         analysisSummary.setFont(analysisSummary.getFont().deriveFont(Font.BOLD, 14f)); analysisSummary.setForeground(new Color(22, 93, 255));
         JPanel messages = new JPanel(new GridLayout(2, 1)); messages.add(analysisSummary); messages.add(analysisDetail); header.add(messages, BorderLayout.SOUTH);
@@ -245,6 +261,31 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
         JOptionPane.showMessageDialog(this, new JScrollPane(text), title, JOptionPane.INFORMATION_MESSAGE);
     }
 
+    private void updateAnalysisBaselineInputs() {
+        Models.AnalysisBaselineMode mode = selectedBaselineMode(String.valueOf(analysisBaselineMode.getSelectedItem()));
+        boolean specified = mode == Models.AnalysisBaselineMode.SPECIFIED_DATE;
+        boolean recent = mode == Models.AnalysisBaselineMode.RECENT_AVERAGE;
+        analysisBaselineDateLabel.setVisible(specified); analysisBaselineDate.setVisible(specified);
+        analysisRecentCountLabel.setVisible(recent); analysisRecentDateCount.setVisible(recent);
+        if (analysisBaselineMode.getParent() != null) {
+            analysisBaselineMode.getParent().revalidate(); analysisBaselineMode.getParent().repaint();
+        }
+    }
+
+    static Models.AnalysisBaselineMode selectedBaselineMode(String label) {
+        if (BASELINE_PREVIOUS.equals(label)) return Models.AnalysisBaselineMode.PREVIOUS_COMPLETE;
+        if (BASELINE_RECENT.equals(label)) return Models.AnalysisBaselineMode.RECENT_AVERAGE;
+        return Models.AnalysisBaselineMode.SPECIFIED_DATE;
+    }
+
+    static int parseRecentDateCount(String value) {
+        try {
+            int count = Integer.parseInt(value == null ? "" : value.trim());
+            if (count < 2 || count > 30) throw new IllegalArgumentException("历史日期数必须是 2–30 的整数");
+            return count;
+        } catch (NumberFormatException e) { throw new IllegalArgumentException("历史日期数必须是 2–30 的整数"); }
+    }
+
     private void startAnalysis() {
         try {
             Models.AnalysisRequest request = new Models.AnalysisRequest();
@@ -252,8 +293,11 @@ final class MainFrame extends JFrame implements MonitorService.Listener {
             request.levelMinimum = ViewLogic.parseLevelBound(analysisLevelMin.getText()); request.levelMaximum = ViewLogic.parseLevelBound(analysisLevelMax.getText());
             request.startThreadId = analysisStartThread.getText().trim(); request.startLevelNo = analysisStartLevel.getText().trim(); request.startFabId = analysisStartFab.getText().trim();
             request.endThreadId = analysisEndThread.getText().trim(); request.endLevelNo = analysisEndLevel.getText().trim(); request.endFabId = analysisEndFab.getText().trim();
-            request.baselineMode = Models.AnalysisBaselineMode.SPECIFIED_DATE;
-            request.specifiedBaselineDate = analysisBaselineDate.getText().trim();
+            request.baselineMode = selectedBaselineMode(String.valueOf(analysisBaselineMode.getSelectedItem()));
+            request.specifiedBaselineDate = request.baselineMode == Models.AnalysisBaselineMode.SPECIFIED_DATE ?
+                analysisBaselineDate.getText().trim() : "";
+            request.recentDateCount = request.baselineMode == Models.AnalysisBaselineMode.RECENT_AVERAGE ?
+                parseRecentDateCount(analysisRecentDateCount.getText()) : 7;
             request.attentionThresholdSeconds = Long.parseLong(analysisAttentionThreshold.getText().trim());
             if (request.attentionThresholdSeconds < 0L || request.attentionThresholdSeconds > 86400L)
                 throw new IllegalArgumentException("关注阈值必须是 0–86400 的整数秒");

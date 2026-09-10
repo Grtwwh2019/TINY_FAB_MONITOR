@@ -97,6 +97,16 @@ public class MainFrameTest {
         assertEquals(AnalysisUiText.COLUMNS.length, AnalysisUiText.WIDTHS.length);
     }
 
+    @Test public void analysisBaselineModesAreExplicitAndRecentCountIsValidated() {
+        assertEquals(Models.AnalysisBaselineMode.SPECIFIED_DATE, MainFrame.selectedBaselineMode("指定单个日期"));
+        assertEquals(Models.AnalysisBaselineMode.PREVIOUS_COMPLETE, MainFrame.selectedBaselineMode("前一个完整日期"));
+        assertEquals(Models.AnalysisBaselineMode.RECENT_AVERAGE, MainFrame.selectedBaselineMode("最近多个完整日期"));
+        assertEquals(2, MainFrame.parseRecentDateCount("2"));
+        assertEquals(30, MainFrame.parseRecentDateCount("30"));
+        assertInvalid(() -> MainFrame.parseRecentDateCount("1"));
+        assertInvalid(() -> MainFrame.parseRecentDateCount("abc"));
+    }
+
     private static void assertInvalid(Runnable action) {
         try { action.run(); org.junit.Assert.fail("应拒绝越界输入"); }
         catch (IllegalArgumentException expected) {}

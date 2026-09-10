@@ -113,4 +113,20 @@ public class OracleRepositoryTest {
         catch (IllegalArgumentException expected) { failed = expected.getMessage().contains("必须同时配置"); }
         assertTrue(failed);
     }
+
+    @Test public void configuredAnalysisStartLevelAllowsValuesAtLeast40() throws Exception {
+        Path directory = Files.createTempDirectory("tiny-fab-start-level-config");
+        Path configFile = directory.resolve("config.properties");
+        String common = "oracle.host=db.example\n" + "oracle.service_name=ORCL\n" + "oracle.username=user\n" + "oracle.password=password\n" +
+            "tables.schedule=SCHEDULE_TABLE\n" + "tables.level_desc=LEVEL_TABLE\n" + "tables.fab_plan=FAB_TABLE\n" +
+            "tables.fab_dependency=DEPENDENCY_TABLE\n" + "monitor.process_date=20251231\n" +
+            "monitor.analysis_start_thread_id=T\n" + "monitor.analysis_start_fab_id=FAB-A\n";
+        Files.write(configFile, (common + "monitor.analysis_start_level_no=41\n").getBytes(StandardCharsets.UTF_8));
+        assertEquals("41", AppConfig.load(configFile, directory).analysisStartLevelNo);
+        Files.write(configFile, (common + "monitor.analysis_start_level_no=39\n").getBytes(StandardCharsets.UTF_8));
+        boolean failed = false;
+        try { AppConfig.load(configFile, directory); }
+        catch (IllegalArgumentException expected) { failed = expected.getMessage().contains("不能小于 40"); }
+        assertTrue(failed);
+    }
 }
